@@ -6,12 +6,6 @@ date: "2024-11-20"
 
 # Titel: Einflussfaktoren auf das Altersprofil von ländlichen Gemeinden - Eine explorative Untersuchung am Beispiel des Erzgebirges
 
-Alisa Sophie Naumann  
-Waiblinger Straße 17  
-71404 Korb
-
-Matr.-Nr.: 3516009  
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
