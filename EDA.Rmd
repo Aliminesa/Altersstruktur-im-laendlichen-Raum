@@ -1,0 +1,1218 @@
+---
+title: "Masterarbeit_EDA"
+output: html_document
+date: "2024-11-20"
+---
+
+# Titel: Einflussfaktoren auf das Altersprofil von ländlichen Gemeinden - Eine explorative Untersuchung am Beispiel des Erzgebirges
+
+Alisa Sophie Naumann  
+Waiblinger Straße 17  
+71404 Korb
+
+Matr.-Nr.: 3516009  
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+getwd()
+knitr::opts_knit$set(root.dir = '/Users/alisanaumann/Desktop/Erzgebirgskreis_Analyse/Daten/')
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+### Packages
+
+```{r, include=FALSE}
+#library(openxlsx)
+#library(dplyr)
+#library(sf)
+#library(ggplot2)
+#library(patchwork)
+#library(tmap)
+#library(leaflet)
+#library(RColorBrewer)
+#library(htmlwidgets)
+#library(htmltools)
+#library(treemap)
+#library(sp)
+#library(summarytools)
+#library(MVN)
+#library(psych)
+#library(corrplot)
+#library(car)
+#library(splithalfr)
+#library(spdep)
+#library(geoR)
+#library(maps)
+#library(ggmap)
+#library(tmap)
+#library(RgoogleMaps)
+#library(spatstat)
+#library(spgrw)
+```
+
+### Daten
+
+```{r Daten}
+library(openxlsx)
+library(dplyr)
+
+### Means der ORS-Reisedistanz/-zeitmatrix nach Chemnitz (Basis: 3% der Wohngebäude je Gemeinde)
+Reise <- read.xlsx("ORS_Reisedistanz_u_Dauer_Berechnung_ORS_Tools.xlsx")
+Reise_Means <- Reise %>%
+  group_by(FROM_ID) %>%
+  summarise(
+    C_PKW_Dauer_h = mean(DURATION_H),
+    C_PKW_Dist_km = mean(DIST_KM)
+  )
+summary(Reise_Means)
+
+#write.xlsx(Reise_Means, "Chemnitz_PKW_Reise_Means.xlsx", overwrite = T, asTable = T)
+
+data <- read.xlsx("Variablen_EDA.xlsx")
+#summary(data)
+
+data_long <- reshape(data, 
+                      varying = list(names(data)[3:6]), 
+                      v.names = "Anteil", 
+                      timevar = "Altersgruppe", 
+                      times = names(data)[3:6], 
+                      direction = "long")
+data_long <- data_long[order(data_long$Gemeinde), ]
+
+data_long <- data_long %>%
+  mutate(Altersgruppe = recode(Altersgruppe, "Bev_Anteil_U18" = "u18 Jahre",
+                               "Bev_Anteil_18_29" = "18-29 Jahre",
+                               "Bev_Anteil_30_64" = "30-64 Jahre",
+                               "Bev_Anteil_UE65" = "ü65 Jahre"))
+table(data_long$Altersgruppe)
+```
+
+## Vorbetrachtungen
+
+```{r Vorbetrachtungen}
+library(ggplot2)
+library(patchwork)
+library(psych)
+aVuV <- data[,3:57]
+#summary(aVuV)
+describe(aVuV)
+```
+
+### abhängige Variablen
+#### Histogramme
+
+```{r Histogramme}
+# Funktion
+plot_histogram <- function(data, age_group, title) {
+  ggplot(data, aes_string(x=age_group)) +
+    geom_histogram(aes(y=..density..), fill="grey", col="black", binwidth=0.5) +
+    stat_function(fun=dnorm, args=list(mean=mean(data[[age_group]], na.rm=TRUE), 
+                                       sd=sd(data[[age_group]], na.rm=TRUE))) +
+    theme_bw() +
+    xlab(title) + 
+    ylim(0,0.6)+
+    ylab(NULL)
+}
+
+# Einzelne Plots
+hist_u18 <- plot_histogram(data, "Bev_Anteil_U18", "Altersgruppe: unter 18 Jahre (%)")
+hist_18_29 <- plot_histogram(data, "Bev_Anteil_18_29", "Altersgruppe: ab 18 bis 29 Jahre (%)")
+hist_30_64 <- plot_histogram(data, "Bev_Anteil_30_64", "Altersgruppe: ab 30 bis 64 Jahre (%)")
+hist_ue65 <- plot_histogram(data, "Bev_Anteil_UE65", "Altersgruppe: ab 65 Jahre (%)")
+
+# Anordnen der Plots
+all_plots3 <- (hist_u18 + hist_18_29) / (hist_30_64 + hist_ue65)
+all_plots3
+```
+
+#### Boxplots
+
+```{r Boxplots}
+boxplot(data$Bev_Anteil_U18, xlab = "Altersgruppe u18 Jahre", ylab = "Anteil je Gemeinde (%)")
+boxplot(data$Bev_Anteil_18_29, xlab = "Altersgruppe 18-29 Jahre", ylab = "Anteil je Gemeinde (%)")
+boxplot(data$Bev_Anteil_30_64, xlab = "Altersgruppe 30-64 Jahre", ylab = "Anteil je Gemeinde (%)")
+boxplot(data$Bev_Anteil_UE65, xlab = "Altersgruppe ü65 Jahre", ylab = "Anteil je Gemeinde (%)")
+
+boxplot(data_long$Anteil ~ data_long$Altersgruppe, 
+        xlab = "Altersgruppen", ylab = "Anteil je Gemeinde (%)")
+```
+
+### Korrelationen aller Variablen
+
+```{r Korrelationen Gesamtdatensatz}
+library(corrplot)
+
+cor_matrix <- cor(aVuV, method = "spearman") # Spearman, da weniger empfindlich gegenüber Ausreißern und keine Normalverteilungsannahme
+cor_matrix
+cor_mtest <- cor.mtest(cor_matrix)
+cor_mtest
+p_matrix <- cor_mtest$p
+
+corrplot(cor_matrix, order = "hclust", hclust.method = "complete",
+         is.corr=TRUE,
+         method="circle",
+         addrect = 19,
+        # p.mat = cor_mtest$p, # Auskreuzen nicht signifikanter Werte
+        # sig.level = 0.05,
+         cl.pos = "b",
+         tl.cex = .45,
+         tl.col = "black",
+         rect.col = "black"
+         )
+
+#cor(aVuV$Bev_Anteil_U18, aVuV$Bev_Dichte_sqkm)
+```
+
+Beobachtungen:
+Je größer der Anteil der ü65-Jährigen, desto geringer der Anteil an u18 und 30-64-jährigen (bei 18-29-jährigen nicht so stark)
+Es korrelieren die Altersgruppen der u18 und 30-65-Jährigen stark (vllt. Kinder und Eltern?).
+Anteil ü65-Jähriger korreliert positiv mit dem Anteil weiblicher Bevölkerung, sowie mit Beherbergung und Waldfläche - negativ mit Beschäftigungsquoten.
+
+Starke positive Korrelationen zwischen SUV-Variablen und Bevölkerungsdichte - sowie stark negativer Zusammenhang mit Vegetationsvariablen.
+SuV-Variablen korrelieren positiv mit Frauenanteil.
+Negative Korrelation der SuV-Variablen mit den Erreichbarkeitsvariablen (Reisedauern).
+
+Anzahl der Grundschulen korrelieren stark positiv mit der Bevölkerungsanzahl.
+Berufs- und Förderschulen korrelieren stark positiv miteinander, sowie mit Variablen zur Flächennutzung (außer Vegetationsfläche).
+Gymnasien und Oberschulen korrelieren nicht ganz so stark.
+
+Sämtliche Schulvariablen korrelieren (stark) positiv mit Betriebsvariablen.
+
+Steuereinnahmekraft je Einwohner korreliert stark positiv mit Pendlersaldo, sowie positiv mit der Anzahl an Betrieben im verarbeitendem Gewerbe und Industrie- und Gewerbefläche, dagegen leicht negativ mit den Beschäftigungsquoten (was könnte das bedeuten?? je mehr Beschäftigte, desto geringer die Steuereinnahmekraft je EW - ggf. durch Auspendler??). Hingegen korrelieren die Beschäftigungsquoten positiv mit dem Geborene/Gestorbene-Saldo.
+
+Pendersaldo korreliert leicht positiv mit Erreichbarkeitsvariablen, und negativ mit Beschäftigungsquoten.
+
+Der Anteil ü65-Jähriger korreliert positiv mit Beherbergung, andere Altersgruppen negativ.
+
+Erreichbarkeit von Apotheken und Hausärzten (in min) korrelieren stark positiv miteinander, sowie ebenfalls die Erreichbarkeit von Ober- und Mittelzentren per PKW/Öffis (in min). Die Erreichbarkeitsvariablen korrelieren negativ mit Siedlungs- und Verkehrsvariablen, sowie Schulanzahlen und positiv mit Vegetationsfläche. Die OeNV-Abdeckung in % Bevölkerung hingegen korreliert negativ mit den anderen Erreichbarkeitsvariablen, darunter Fahrdist/Fahrdauer nach Chemnitz; ebenfalls negative Korrrelationen mit Vegetationsfläche und Beherbergung.
+
+Fahrdauer und Distanz je Gemeinde nach Chemnitz korrelieren stark miteinander, aber auch mit der Anzahl an Beherbergungsstätten und Vegetations- und Waldfläche. Leicht positiver Zusammenhang mit den anderen Erreichbarkeitsvariablen. Positiver Zusammenhang mit dem Bevölkerungsanteil der UE65-Jährigen, negativ mit U18-Jährigen und 30-64-Jährigen.
+
+Geborenen und Gestorbenensaldo je 1000 Ew korreliert stark positiv mit der Gruppe der 30-64-Jährigen und u18-Jährigen, negativ mit dem Bevölkerungsanteil der UE65-Jährigen.
+
+Der Wanderungssaldo korreliert mit der Gesamtveränderung je 1000EW. Beide Variablen korrelieren leicht negativ mit den Fahrtdistanz-Variablen nach Chemnitz, sowie mit Vegetations- und Waldfläche. Mit den Altersvariablen sind schwache Korrelationen vorhanden.
+
+Tagebaufläche, Gewässerfläche und Pendeldistanz weisen kaum nennenswerte Korrelationen mit anderen Variablen auf.
+
+
+#### Korrelationen der uV mit Altersgruppen als Tabelle, Identifizierung aussagekräftiger Variablen
+
+```{r Korrelationen Tabelle}
+AGs <- c("Bev_Anteil_U18", "Bev_Anteil_18_29", "Bev_Anteil_30_64", "Bev_Anteil_UE65")
+cor_AGs <- cor_matrix[,AGs]
+cor_AGs <- cor_AGs[!rownames(cor_AGs) %in% AGs, ]
+sig_AGs <- p_matrix[,AGs]
+sig_AGs <- sig_AGs[!rownames(sig_AGs) %in% AGs, ]
+
+cor_sig_AGs <- data.frame(
+  Variable = rownames(cor_AGs),
+  cor_AGu18 = cor_AGs[, "Bev_Anteil_U18"],
+  p_AGu18 = sig_AGs[, "Bev_Anteil_U18"],
+  cor_AG18_29 = cor_AGs[, "Bev_Anteil_18_29"],
+  p_AG18_29 = sig_AGs[, "Bev_Anteil_18_29"],
+  cor_AG30_64 = cor_AGs[, "Bev_Anteil_30_64"],
+  p_AG30_64 = sig_AGs[, "Bev_Anteil_30_64"],
+  cor_AGue65 = cor_AGs[, "Bev_Anteil_UE65"],
+  p_AGue65 = sig_AGs[, "Bev_Anteil_UE65"]
+)
+
+#write.xlsx(cor_sig_AGs, "Korrelationen.xlsx", overwrite = T, asTable = T)
+#cor_sig_AGs <- read.xlsx("Korrelationen.xlsx")
+
+print(cor_sig_AGs[order(-cor_sig_AGs$cor_AGue65),])
+```
+
+Für die Altersvariablen tendenziell unbedeutende uV:
+
+Flächenvariablen: Tagebau, Gewässer, Wohnbau, Verkehr
+
+Betriebe: Anzahl Betriebe Landwirtschaft, Anzahl Betriebe und Umsatz Verarbeitendes Gewerbe
+
+Erreichbarkeit: Apotheke, Hausarzt, OeNV-Abdeckung
+
+Sonstige: Wanderungssaldo, Pendeldistanz
+
+
+## PCA Gesamtdatensatz
+
+```{r PCA Gesamtdatensatz}
+names(aVuV)
+Auswahl_uV <- c("Bev_Gesamt_2021", "Bev_Dichte_sqkm", "Bev_Anteil_Frau", "Anz_Grundsch", "Anz_Obersch", "Anz_Gymnas", "Anz_Foerdersch", "Anz_Berufssch", "Anteil_Ind_Gew_Fl", "Anteil_SuV_Fl_ohne_Ind_u_SFE", "Anteil_Landw_Fl", "Anteil_Vege_Fl_ohne_Landw", "Anz_Betr_Landw", "Anz_Betr_Verarb", "Verarb_taetige_Pers", "Verarb_Umsatz_2021", "Anz_Betr_Baugew", "Baugew_taetige_Pers", "Baugew_Umsatz_2020", "Anz_Betr_Sek_Sektor", "Personal_Sek_Sektor", "Umsatz_Sek_Sektor", "Anz_Beherbergung", "Pendlersaldo_rel", "St_Einnkr_je_EW_2021", "BeschQ_insg_2021", "Ges_Ver_Saldo_je_1000ew_2021", "C_PKW_Dist_km", "Err_OzMz_PKW_2020", "Err_OzMz_OeV_2020")
+
+uV <- aVuV[, Auswahl_uV]
+describe(uV)
+
+PCA1 <- principal(uV, rotate = "oblimin")
+PCA1$values
+
+ggplot(data.frame(values = PCA1$values) %>%
+         mutate(row = row_number()), aes(x = row, y = values)) +
+         geom_line() +
+         geom_point() +
+         theme_minimal() +
+         geom_hline(yintercept = 1, colour = "red") +
+         labs(x = "Factor", y = "Eigenvalue")
+
+PCA1_6 <- principal(uV,
+            nfactors = 6, 
+            rotate = "oblimin")
+print(PCA1_6, cut = 0.3, sort=T)
+```
+
+#### Korrelationen und Dimensionen der Schulvariablen (Faktor Schulabdeckung)
+
+```{r Schulabdeckung}
+library(summarytools)
+
+## Daten
+Schulen_Auswahl <- c("Anz_Grundsch", "Anz_Obersch", "Anz_Gymnas", "Anz_Foerdersch", "Anz_Berufssch")
+Schulen <- aVuV[,Schulen_Auswahl]
+describe(Schulen)
+
+boxplot(Schulen)
+freq(Schulen)
+
+# Kategoriale Variablen erstellen
+Schulen <- Schulen %>%
+  mutate(
+    ord_Grundsch = case_when(
+      Anz_Grundsch == 0 ~ 0,
+      Anz_Grundsch == 1 ~ 1,
+      TRUE ~ 2
+    ),
+    cat_Obersch = ifelse(Anz_Obersch == 0, 0, 1),
+    cat_Gymnas = ifelse(Anz_Gymnas == 0, 0, 1),
+    cat_Foedersch = ifelse(Anz_Foerdersch == 0, 0, 1),
+    cat_Berufssch = ifelse(Anz_Berufssch == 0, 0, 1)
+  )
+
+freq(Schulen)
+
+#data <- cbind(data, Schulen[,6:10])
+#write.xlsx(data, "Variablen_ESDA_2.xlsx", overwrite = T, asTable = T)
+
+## Korrelationen
+cor_matrix <- cor(Schulen[,Schulen_Auswahl], method = "spearman")
+cor_matrix
+cor_mtest <- cor.mtest(cor_matrix)
+cor_mtest
+
+corrplot(cor_matrix, order = "hclust", hclust.method = "complete",
+         is.corr=TRUE,
+         method="number",
+         number.cex = 0.5,
+         addrect = 3,
+        # p.mat = cor_mtest$p, # Auskreuzen nicht signifikanter Werte
+        # sig.level = 0.05,
+         cl.pos = "b",
+         tl.cex = .45,
+         tl.col = "black",
+         rect.col = "black"
+         )
+
+## Dimensionsreduktion
+PCA_Schulen <- principal(scale(Schulen[,Schulen_Auswahl]), rotate = "oblimin") 
+PCA_Schulen$values
+
+ggplot(data.frame(values = PCA_Schulen$values) %>%
+         mutate(row = row_number()), aes(x = row, y = values)) +
+         geom_line() +
+         geom_point() +
+         theme_minimal() +
+         geom_hline(yintercept = 1, colour = "red") +
+         labs(x = "Factor", y = "Eigenvalue")
+
+print(PCA_Schulen, cut = 0.3, sort=T) # Faktor Schulabdeckung?
+
+alpha(Schulen[,Schulen_Auswahl]) # raw und std alpha nah beieinander (0.85 - 0.89), sehr reliabel, keine Verbesserung bei Entfernung eines Items
+
+Schulen$Schulabdeckung_Scores <- PCA_Schulen$scores
+aVuV$Schulabdeckung <- Schulen$Schulabdeckung
+freq(aVuV$Schulabdeckung)
+
+describe(Schulen)
+```
+
+#### Korrelationen und Dimensionen der Flächennutzung (Faktor Urbanisierung)
+
+```{r Flaechennutzung}
+## Daten
+names(aVuV)
+FL_Nutzung_Auswahl <- c("Bev_Dichte_sqkm", "Anteil_Siedlung_Fl", "Anteil_Wohnbau_Fl", "Anteil_Ind_Gew_Fl", "Anteil_SFE_Fl", "Anteil_Tagebau_Fl", "Anteil_Verkehr_Fl", "Anteil_Vegetationsfl", "Anteil_Landw_Fl", "Anteil_Wald_Fl", "Anteil_Gew_Fl", "Anteil_SuV_Fl", "Anteil_SuV_ohne_SFE",  "Anteil_SuV_Fl_ohne_Ind_u_SFE", "Anteil_SuV_Fl_ohne_Ind_u_SFE", "Anteil_Siedl_FL_ohne_Ind_u_SFE", "Anteil_Vege_Fl_ohne_Landw")
+
+Urbanisierung <- aVuV[,FL_Nutzung_Auswahl]
+describe(Urbanisierung)
+
+## Korrelationen
+cor_matrix <- cor(Urbanisierung, method = "spearman")
+cor_matrix
+cor_mtest <- cor.mtest(cor_matrix)
+cor_mtest
+
+corrplot(cor_matrix, order = "hclust", hclust.method = "complete",
+         is.corr=TRUE,
+         method="number",
+         number.cex = 0.5,
+         addrect = 5,
+        # p.mat = cor_mtest$p, # Auskreuzen nicht signifikanter Werte
+        # sig.level = 0.05,
+         cl.pos = "b",
+         tl.cex = .45,
+         tl.col = "black",
+         rect.col = "black"
+         )
+
+## Dimensionsreduktion
+Urbanisierung_Auswahl <- c("Bev_Dichte_sqkm", "Anteil_SFE_Fl", "Anteil_SuV_Fl_ohne_Ind_u_SFE")#, "Anteil_Landw_Fl", "Anteil_Vege_Fl_ohne_Landw", "Anteil_Ind_Gew_Fl")
+
+PCA_U <- principal(scale(Urbanisierung[,c(Urbanisierung_Auswahl, "Anteil_Landw_Fl", "Anteil_Ind_Gew_Fl")]), rotate = "oblimin") 
+PCA_U$values
+
+ggplot(data.frame(values = PCA_U$values) %>%
+         mutate(row = row_number()), aes(x = row, y = values)) +
+         geom_line() +
+         geom_point() +
+         theme_minimal() +
+         geom_hline(yintercept = 1, colour = "red") +
+         labs(x = "Factor", y = "Eigenvalue")
+
+PCA_U_2 <- principal(scale(Urbanisierung[,c(Urbanisierung_Auswahl, "Anteil_Landw_Fl", "Anteil_Ind_Gew_Fl")]),
+            nfactors = 2, 
+            rotate = "oblimin")
+print(PCA_U_2, cut = 0.3, sort=T) # 2 Dimensionen Flächennutzung (Urbanisierung und Landwirtschaft, dem negativ gegenüber steht Vegetationsfläche)
+
+alpha(Urbanisierung[,c(Urbanisierung_Auswahl, "Anteil_Ind_Gew_Fl")]) # großer Unterschied zwischen raw und std Alpha wegen Skalenunterschieden (0.1 - 0.92), std Alpha würde sich noch erhöhen wenn Item Industrie- und Gewerbefläche entfernt würde (0.95), wäre allerdings ausreichend reliabel - ggf. passt das Item besser zu einer Wirtschaftsdimension?
+#-> Standardisiert ließe sich ein Score für den 1. Faktor bilden
+
+alpha(Urbanisierung[,Urbanisierung_Auswahl]) # Std Alpha 0.95 - wäre 0.96 bei Entfernung von Sport-, Freizeit & Erholungsfläche, aber so bereits hochreliabel
+
+PCA_U_1 <- principal(scale(Urbanisierung[,Urbanisierung_Auswahl]),
+            nfactors = 1, 
+            rotate = "oblimin")
+PCA_U_1$values
+print(PCA_U_1, cut = 0.3, sort=T)
+
+Urbanisierung$Urbanisierung_Scores <- PCA_U_1$scores
+aVuV$Urbanisierung <- Urbanisierung$Urbanisierung_Scores
+freq(aVuV$Urbanisierung)
+
+### Verteilungseigenschaften
+describe(Urbanisierung)
+```
+
+
+#### Korrelationen und Dimensionen der Wirtschaftsstruktur (Faktoren Ökonomische Anziehungskraft und Industrie- und Agrarsektor)
+
+```{r Wirtschaftsstruktur}
+library(splithalfr)
+names(aVuV)
+## Daten
+Wirtsch <- aVuV[,c("Anteil_Ind_Gew_Fl", "Anteil_Landw_Fl", "Anz_Betr_Landw", "Anz_Betr_Verarb", "Verarb_taetige_Pers",  "Verarb_Umsatz_2021", "Anz_Betr_Baugew", "Baugew_taetige_Pers", "Baugew_Umsatz_2020", "Anz_Betr_Sek_Sektor", "Personal_Sek_Sektor", "Umsatz_Sek_Sektor", "Anz_Beherbergung", "BeschQ_insg_2021", "St_Einnkr_je_EW_2021", "Pendlersaldo_rel", "Pendeldist_Km_2022")]
+describe(Wirtsch)
+
+## Korrelationen
+cor_matrix <- cor(Wirtsch, method = "spearman")
+cor_matrix
+cor_mtest <- cor.mtest(cor_matrix)
+cor_mtest
+
+corrplot(cor_matrix, order = "hclust", hclust.method = "complete",
+         is.corr=TRUE,
+         method="number",
+         number.cex = 0.5,
+         addrect = 5,
+        # p.mat = cor_mtest$p, # Auskreuzen nicht signifikanter Werte
+        # sig.level = 0.05,
+         cl.pos = "b",
+         tl.cex = .45,
+         tl.col = "black",
+         rect.col = "black"
+         )
+
+## Dimensionsreduktion
+Wirtsch_Auswahl <- c("Anteil_Ind_Gew_Fl", "Anteil_Landw_Fl", "Anz_Betr_Landw","Anz_Betr_Sek_Sektor", "Personal_Sek_Sektor", "Umsatz_Sek_Sektor", "Anz_Beherbergung", "BeschQ_insg_2021", "St_Einnkr_je_EW_2021", "Pendlersaldo_rel", "Pendeldist_Km_2022") # "Anteil_Landw_Fl"
+
+PCA_Wirt <- principal(scale(Wirtsch[,Wirtsch_Auswahl]), rotate = "oblimin") # [,Wirtsch_Auswahl]
+PCA_Wirt$values
+
+ggplot(data.frame(values = PCA_Wirt$values) %>%
+         mutate(row = row_number()), aes(x = row, y = values)) +
+         geom_line() +
+         geom_point() +
+         theme_minimal() +
+         geom_hline(yintercept = 1, colour = "red") +
+         labs(x = "Factor", y = "Eigenvalue")
+
+PCA_Wirt_3 <- principal(scale(Wirtsch[,Wirtsch_Auswahl]), #[,c(Wirtsch_Auswahl, "Anteil_Landw_Fl")]
+            nfactors = 3, 
+            rotate = "oblimin")
+print(PCA_Wirt_3, cut = 0.3, sort=T) # 4 Dimensionen - 1. HK Industrie- und Agrarsektor-Konzentration, 2. HK: Ökonomische Anziehungskraft, 3. HK: Tourismus? Schwacher Faktor, Korrelationen zwischen den Items sind gering, ggf. wird die Anzahl an Beherbergungsstätten als Einzelvariable in Betracht gezogen. Pendeldistanz scheint für die Analyse ansonsten irrelevant.
+
+#### Faktor 1: Agrar- und Industriesektor - Konzentration (-> lediglich Einbeziehung sekundärer Sektor)
+AuI_Auswahl <- c("Anz_Betr_Landw","Anz_Betr_Sek_Sektor", "Personal_Sek_Sektor", "Umsatz_Sek_Sektor")
+
+PCA_AuI <- principal(scale(Wirtsch[,AuI_Auswahl]),
+            nfactors = 1, 
+            rotate = "oblimin")
+print(PCA_AuI, cut = 0.3, sort=T) 
+
+alpha(Wirtsch[AuI_Auswahl]) # raw und std Alpha weit auseinander (0.01 - 0.91), sehr reliabel, Entfernung von Anz_Betr_Landw würde std Alpha auf 0.95 erhöhen -> da auch sonst keine hohen Korrelationen mit AV wird von dieser Variable abgesehen
+
+Sek_Sektor_Auswahl <- c("Anz_Betr_Sek_Sektor", "Personal_Sek_Sektor", "Umsatz_Sek_Sektor")
+
+PCA_Sek <- principal(scale(Wirtsch[,Sek_Sektor_Auswahl]),
+            nfactors = 1, 
+            rotate = "oblimin")
+print(PCA_Sek, cut = 0.3, sort=T)
+
+alpha(Wirtsch[Sek_Sektor_Auswahl]) # CA bei 0.95, trotzdem Verbesserung bei Entfernung weiterer Items
+
+Wirtsch$Sek_Sektor_Scores <- PCA_Sek$scores
+aVuV$Sek_Sektor <- Wirtsch$Sek_Sektor_Scores
+
+# ggf. wird lediglich auf die Variable Anz_Betr_Sek_Sektor zurückgegriffen, da sie den stärksten Bezug zu den AV aufweist und NAs beim Personal/beim Umsatz auf Grundlage dieser Variable berechnet wurden.
+
+#### Faktor 2: Ökonomische Anziehungskraft
+OeA_Auswahl <- c("St_Einnkr_je_EW_2021", "Pendlersaldo_rel") # "BeschQ_insg_2021", "Anteil_Ind_Gew_Fl") - Beschäftigungsquoten haben für diesen Faktor sehr wenig Informationsgehalt, wirken interessanterweise sogar negativ zu den anderen Variablen
+
+PCA_OeA <- principal(scale(Wirtsch[,c(OeA_Auswahl, "Anteil_Ind_Gew_Fl")]),
+            nfactors = 1, 
+            rotate = "oblimin")
+print(PCA_OeA, cut = 0.3, sort=T) 
+
+alpha(Wirtsch[,c(OeA_Auswahl, "Anteil_Ind_Gew_Fl")]) # auch hier großer Unterschied zwischen raw und std Alpha (0.16 - 0.85), std Alpha würde sich bei Entfernung von Ind_Gew_Fl noch erhöhen (0.88), wäre aber auch hier ausreichend reliabel
+## Anteil_Ind_Gew_Fläche sollte nicht verwendet werden, da es auf sowohl stark auf den Faktor Urbanisierung als auch auf Ökon. Anziehungskraft lädt und in beiden Faktoren das schwächste Item ist (fehlende Diskriminanzvalidität)
+
+PCA_OeA <- principal(scale(Wirtsch[,OeA_Auswahl]),
+            nfactors = 1, 
+            rotate = "oblimin")
+print(PCA_OeA, cut = 0.3, sort=T) 
+
+#alpha(Wirtsch[,OeA_Auswahl]) # macht bei nur 2 Variablen keinen Sinn
+cor(Wirtsch$St_Einnkr_je_EW_2021, Wirtsch$Pendlersaldo_rel, method = "spearman") # 0.737
+spearman_brown(Wirtsch$St_Einnkr_je_EW_2021, Wirtsch$Pendlersaldo_rel) # Spearman-Brown_Koeffizient bestätigt Reliabilität: 0.883 ...s. Eisinga et al. 2013
+
+Wirtsch$Oekon_Anziehung_Scores <- PCA_OeA$scores
+aVuV$Oekon_Anziehung <- Wirtsch$Oekon_Anziehung_Scores
+
+
+describe(Wirtsch[,c("Oekon_Anziehung_Scores", "Sek_Sektor_Scores", OeA_Auswahl, AuI_Auswahl, "BeschQ_insg_2021", "Anteil_Ind_Gew_Fl", "Anteil_Landw_Fl", "Anz_Beherbergung")])
+```
+
+#### Korrelationen und Dimensionen der Erreichbarkeitsvariablen (Faktor Mobilität)
+
+```{r Mobilität}
+## Daten
+Erreich <- aVuV[,c("Err_OzMz_OeV_2020", "Err_OzMz_PKW_2020", "Err_OeNV_2020", "Err_Hausarzt_2021", "Err_Apotheke_2020", "C_PKW_Dist_km", "C_PKW_Dauer_h")]
+
+## Korrelationen
+cor_matrix <- cor(Erreich, method = "spearman")
+cor_matrix
+cor_mtest <- cor.mtest(cor_matrix)
+cor_mtest
+
+corrplot(cor_matrix, order = "hclust", hclust.method = "complete",
+         is.corr=TRUE,
+         method="number",
+         number.cex = 0.5,
+         addrect = 4,
+        # p.mat = cor_mtest$p, # Auskreuzen nicht signifikanter Werte
+        # sig.level = 0.05,
+         cl.pos = "b",
+         tl.cex = .45,
+         tl.col = "black",
+         rect.col = "black"
+         )
+
+## Dimensionsreduktion
+PCA_Err <- principal(scale(Erreich), rotate = "oblimin") 
+PCA_Err$values
+
+ggplot(data.frame(values = PCA_Err$values) %>%
+         mutate(row = row_number()), aes(x = row, y = values)) +
+         geom_line() +
+         geom_point() +
+         theme_minimal() +
+         geom_hline(yintercept = 1, colour = "red") +
+         labs(x = "Factor", y = "Eigenvalue")
+
+PCA_Err_3 <- principal(scale(Erreich),
+            nfactors = 3, 
+            rotate = "oblimin")
+print(PCA_Err_3, cut = 0.3, sort=T) # 3 Dimensionen - 1. HK: Reisedist/dauer Chemnitz, 2. HK: Reisedauer_OzMz, 3. HK: Med_Versorgung - da die Variablen der 3. HK kaum mit den aV korrelieren wird nur eine Skala für die 2. HK gebildet. Für die Einschätzung der Reisedauer nach Chemnitz wird vorzugsweise die Distanz verwendet, da sie i.d.R. aufgrund der Einschränkungen von ORS-Tools verlässlicher sein sollte.
+
+Reise_OzMz_Auswahl <- c("Err_OzMz_OeV_2020", "Err_OzMz_PKW_2020") # "Err_OeNV_2020" Haltestellenabdeckung für aV kaum relevant, und korreliert kaum mit anderen Erreichbarkeitsvariablen
+
+PCA_Reise <- principal(Erreich[,c(Reise_OzMz_Auswahl)],
+            nfactors = 1, 
+            rotate = "oblimin")
+print(PCA_Reise, cut = 0.3, sort=T) 
+
+#alpha(Erreich[, Reise_OzMz_Auswahl]) # macht bei nur 2 Variablen keinen Sinn
+cor(Erreich$Err_OzMz_PKW_2020, Erreich$Err_OzMz_OeV_2020, method = "spearman") # 0.909
+spearman_brown(Erreich$Err_OzMz_PKW_2020, Erreich$Err_OzMz_OeV_2020) # Spearman-Brown_Koeffizient bestätigt Reliabilität: 0.965 ...s. Eisinga et al. 2013
+
+# Mittelwertindex für Reisedauer bilden
+Erreich$Reise_OzMz_Means <- rowMeans(Erreich[,Reise_OzMz_Auswahl])
+summary(Erreich$Reise_OzMz_Means)
+aVuV$Reise_OzMz <- Erreich$Reise_OzMz_Means
+
+describe(Erreich)
+```
+
+
+## Vorbetrachtungen der Variablenauswahl
+
+```{r Vorbetrachtungen Variablenauswahl}
+AGs <- c("Bev_Anteil_U18", "Bev_Anteil_18_29", "Bev_Anteil_30_64", "Bev_Anteil_UE65")
+Variablenauswahl <- c("Bev_Anteil_Frau", "Ges_Ver_Saldo_je_1000ew_2021", "Urbanisierung", "Anteil_Landw_Fl", "Oekon_Anziehung", "Anz_Betr_Sek_Sektor", "Reise_OzMz", "C_PKW_Dist_km","Anz_Beherbergung", "BeschQ_insg_2021") # "Anteil_Ind_Gew_Fl", "Anteil_Vege_Fl_ohne_Landw", "Anz_Betr_Baugew", "Sek_Sektor", "St_Einnkr_je_EW_2021", "Anteil_Landw_Fl", "Schulabdeckung")
+
+# Auswahl von Variablen über Korrelation mit AV, bzw. Ausschluss einiger Variablen wegen hohen gemeinsamen Korrelationen
+cor(aVuV$Urbanisierung, aVuV$Anteil_Vegetationsfl, method = "spearman") # -0.92
+cor(aVuV$Urbanisierung, aVuV$Anteil_Vege_Fl_ohne_Landw, method = "spearman") # -0.52
+# Dilemma 1: Abbildung der Flächenanteile: Urbanisierung hat stark negativen Zusammenhang mit Vegetationsfläche
+cor(aVuV$Anz_Betr_Sek_Sektor, aVuV$Schulabdeckung, method = "spearman") # 0.72
+# Dilemma 2: Hohe Korrelation von Anz_Betr_Sek_Sektor mit Schulabdeckung -> Entfernung Schulabdeckung
+
+aV <- aVuV[,AGs]
+uV <- aVuV[,Variablenauswahl]
+aVuV_final <- cbind(aV, uV)
+aVuV_final_std <- scale(aVuV_final)
+aVuV_final_std <- as.data.frame(aVuV_final_std)
+
+data_final <- cbind(Gemeinde = data$Gemeinde, Schluesselnummer = data$Schluesselnummer, aVuV_final, Bev_Gesamt_2021 = data$Bev_Gesamt_2021)
+describe(data_final)
+data_final_std <- cbind(Gemeinde = data$Gemeinde, Schluesselnummer = data$Schluesselnummer, Bev_Gesamt_2021 = data$Bev_Gesamt_2021, aVuV_final_std)
+describe(data_final_std)
+
+#write.xlsx(data_final, "Variablen_ESDA.xlsx", overwrite = T)
+#write.xlsx(data_final_std, "Variablen_ESDA_std.xlsx", overwrite = T)
+
+## Korrelationen der uV
+cor_matrix_uV <- cor(uV, method = "spearman")
+cor_mtest_uV <- cor.mtest(cor_matrix_uV)
+
+corrplot(cor_matrix_uV, order = "hclust", hclust.method = "complete",
+         is.corr=TRUE,
+         method="number",
+         number.cex = 0.5,
+         addrect = 7,
+        # p.mat = cor_mtest$p, # Auskreuzen nicht signifikanter Werte
+        # sig.level = 0.05,
+         cl.pos = "b",
+         tl.cex = .45,
+         tl.col = "black",
+         rect.col = "black"
+         )
+
+cor_matrix_aVuV <- cor(aVuV_final, method = "spearman")
+cor_mtest_aVuV <- cor.mtest(cor_matrix_aVuV)
+p_matrix_aVuV <- cor_mtest_aVuV$p
+
+cor_AGs <- cor_matrix_aVuV[,AGs]
+cor_AGs <- cor_AGs[!rownames(cor_AGs) %in% AGs, ]
+sig_AGs <- p_matrix_aVuV[,AGs]
+sig_AGs <- sig_AGs[!rownames(sig_AGs) %in% AGs, ]
+
+cor_sig_AGs <- data.frame(
+  Variable = rownames(cor_AGs),
+  cor_AGu18 = cor_AGs[, "Bev_Anteil_U18"],
+  p_AGu18 = sig_AGs[, "Bev_Anteil_U18"],
+  cor_AG18_29 = cor_AGs[, "Bev_Anteil_18_29"],
+  p_AG18_29 = sig_AGs[, "Bev_Anteil_18_29"],
+  cor_AG30_64 = cor_AGs[, "Bev_Anteil_30_64"],
+  p_AG30_64 = sig_AGs[, "Bev_Anteil_30_64"],
+  cor_AGue65 = cor_AGs[, "Bev_Anteil_UE65"],
+  p_AGue65 = sig_AGs[, "Bev_Anteil_UE65"]
+)
+
+#write.xlsx(cor_sig_AGs, "Korrelationen_aVuV.xlsx", overwrite = T, asTable = T)
+#cor_sig_AGs <- read.xlsx("Korrelationen_aVuV.xlsx")
+
+print(cor_sig_AGs[order(-cor_sig_AGs$cor_AGu18),])
+```
+
+### Verteilungseigenschaften der verwendeten Variablen
+
+```{r Verteilungseigenschaften}
+library(MVN)
+
+#MVN <- mvn(
+#  aVuV_final,
+#  mvnTest = "mardia",
+#  covariance = TRUE,
+#  desc = TRUE,
+#  univariateTest = "Lillie",
+#  univariatePlot = "histogram"
+#)
+
+#save(MVN, file = "MVN")
+
+# Excel-Datei
+# write.xlsx(MVN$univariateNormality, "univariate_normality.xlsx", row.names = FALSE)
+# write.xlsx(MVN$Descriptives, "descriptives.xlsx", row.names = FALSE)
+
+load("MVN")
+MVN
+```
+
+### Regressionsvoraussetzungen AG u18 Jahre
+
+```{r Residuendiagnostik AG u18}
+describe(aVuV_final)
+describe(aVuV_final_std)
+
+library(lm.beta)
+names(aVuV_final)
+lm_AGu18 <- lm(Bev_Anteil_U18 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final)
+summary(lm_AGu18)
+
+lm_AGu18_std <- lm(Bev_Anteil_U18 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final_std)
+#summary(lm_AGu18_std)
+lm.beta(lm_AGu18)
+
+# Homoskedastizität - A1
+library(olsrr)
+ols_plot_resid_fit(lm_AGu18) # breite Streuung der Residuen um Y, mit großem Ausreißer, aber keine systematischen Schwankungen
+ols_test_breusch_pagan(lm_AGu18) # nicht signifikant -> keine Heteroskedastizität
+
+# Linearität - A3
+library(lmtest)
+pairs(aVuV_final[,c(1, 5:14)], upper.panel = NULL) # Linearitätsannahme: einige Ausreißer - v.A. Oekonom. Anziehung (Niederdorf), aber auch Beherbergung (Oberwiesenthal)
+raintest(lm_AGu18) # nicht signifikant
+
+Res1 <- data.frame(stResiduen = scale(lm_AGu18$residuals), st.fitted.values = scale(lm_AGu18$fitted.values))
+cor.test(Res1$st.fitted.values, Res1$stResiduen) # nicht signifikant
+ggplot(Res1, aes(st.fitted.values, stResiduen))+
+geom_point()+
+geom_smooth(method = "loess")+
+xlab("standardisierte Fitted Values")+
+ylab("standardisierte Residuen")
+# Ausreißer beeinflussen Linearität, aber nicht signifikant
+
+# Autokorrelation - A4
+library(car)
+durbinWatsonTest(lm_AGu18) # nicht signifikant (keine Autokorrelation 1. Ordnung)
+bgtest(lm_AGu18, order = 1) # nicht signifikant (Breusch-Godfrey-Test)
+
+# Normalverteilung der Residuen - A5
+ols_plot_resid_hist(lm_AGu18)
+ols_plot_resid_qq(lm_AGu18)
+shapiro.test(lm_AGu18$residuals) # Abweichung nicht signifikant
+library(moments)
+skewness(lm_AGu18$residuals) # 0.333 - sollte nahe 0 sein -> passt
+kurtosis(lm_AGu18$residuals) # 3.660 - sollte nahe 3 sein -> passt, Tendenz zu einer steileren Kurve
+agostino.test(lm_AGu18$residuals) # nicht signifikant
+anscombe.test(lm_AGu18$residuals) # nicht signifikant
+
+# Multikollinearität
+ols_vif_tol(lm_AGu18) # Toleranz überall weit >0.2, und VIF < 5 -> keine ausgeprägte Multikollinearität
+
+# Ausreißer
+ols_plot_resid_stud(lm_AGu18) # Fall 29 ist ein Ausreißer (Königswalde)
+ols_plot_cooksd_chart(lm_AGu18) # strengere Vorgabe - hier neben 29 auch Fall 3 (Aue-Bad Schlema), Fall 36 (Niederdorf), 38 (Oberwiesenthal) und 52 (Tannenberg)
+ols_plot_resid_lev(lm_AGu18) # Fälle 29, 42 (Raschau-Markersbach), 24 (Heidersdorf), 36 und 38
+ols_plot_dfbetas(lm_AGu18) # Beobachtungen mit großem Einfluss auf Parameterschätzungen
+
+# Aufgrund von Ausreißern besser das Robustverfahren verwenden?
+library(MASS)
+rlm_AGu18 <- rlm(Bev_Anteil_U18 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final)
+summary(rlm_AGu18)
+
+rlm_AGu18_std <- rlm(Bev_Anteil_U18 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final_std)
+summary(rlm_AGu18_std)
+```
+
+### Regressionsvoraussetzungen AG 18 bis 29 Jahre
+
+```{r Residuendiagnostik AG 18-29}
+lm_AG18_29 <- lm(Bev_Anteil_18_29 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final)
+summary(lm_AG18_29)
+
+lm_AG18_29_std <- lm(Bev_Anteil_18_29 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final_std)
+#summary(lm_AG18_29_std)
+lm.beta(lm_AG18_29)
+
+# Homoskedastizität - A1
+ols_plot_resid_fit(lm_AG18_29) # Residuen streuen für höhere Schätzwerte von Y stärker 
+ols_test_breusch_pagan(lm_AG18_29) # signifikant -> Heteroskedastizität bestätigt
+
+# Linearität - A3
+pairs(aVuV_final[,c(2, 5:14)], upper.panel = NULL) # Linearitätsannahme: ein sehr auffälliger Ausreißer: wahrscheinlich Schneeberg (46)
+raintest(lm_AG18_29) # nicht signifikant, d.h. keine signifikante Verletzung von A3
+
+Res1 <- data.frame(stResiduen = scale(lm_AG18_29$residuals), st.fitted.values = scale(lm_AG18_29$fitted.values))
+cor.test(Res1$st.fitted.values, Res1$stResiduen) # nicht signifikant
+ggplot(Res1, aes(st.fitted.values, stResiduen))+
+geom_point()+
+geom_smooth(method = "loess")+
+xlab("standardisierte Fitted Values")+
+ylab("standardisierte Residuen")
+# Ausreißer beeinflussen Linearität, aber nicht signifikant
+
+# Autokorrelation - A4
+durbinWatsonTest(lm_AG18_29) # signifikant (Autokorrelation 1. Ordnung)
+bgtest(lm_AG18_29, order = 1) # signifikant (Breusch-Godfrey-Test)
+
+# Normalverteilung der Residuen - A5
+ols_plot_resid_hist(lm_AG18_29)
+ols_plot_resid_qq(lm_AG18_29)
+shapiro.test(lm_AG18_29$residuals) # Abweichung nicht signifikant
+
+skewness(lm_AG18_29$residuals) # -0.282 - sollte nahe 0 sein -> passt
+kurtosis(lm_AG18_29$residuals) # 4.019 - sollte nahe 3 sein -> passt gerade noch, Tendenz zu einer steileren Kurve
+agostino.test(lm_AG18_29$residuals) # nicht signifikant
+anscombe.test(lm_AG18_29$residuals) # bei einem Niveau von 0.5 gerade so nicht signifikant
+
+# Multikollinearität
+ols_vif_tol(lm_AG18_29) # Toleranz überall weit >0.2, und VIF < 5 -> keine ausgeprägte Multikollinearität
+
+# Ausreißer
+ols_plot_resid_stud(lm_AG18_29) # Fälle 5 (Bärenstein) und 45 (Schneeberg) sind Ausreißer
+ols_plot_cooksd_chart(lm_AG18_29) # strengere Vorgabe - hier neben 5 und 45 auch die Fälle 24 (Heidersdorf) und 27 (Johanngeorgenstadt)
+ols_plot_resid_lev(lm_AG18_29) # Fälle 5, 45, 27 und 35 (Neukirchen) sowie 24, 38 (Oberwiesenthal) und 36 (Niederdorf)
+ols_plot_dfbetas(lm_AG18_29) # Beobachtungen mit großem Einfluss auf Parameterschätzungen
+
+# Aufgrund von Ausreißern besser das Robustverfahren verwenden?
+rlm_AG18_29 <- rlm(Bev_Anteil_18_29 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final)
+summary(rlm_AG18_29)
+
+rlm_AG18_29_std <- rlm(Bev_Anteil_18_29 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final_std)
+summary(rlm_AG18_29_std)
+```
+
+### Regressionsvoraussetzungen AG 30 bis 64 Jahre
+
+```{r Residuendiagnostik AG 30-64}
+lm_AG30_64 <- lm(Bev_Anteil_30_64 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final)
+summary(lm_AG30_64)
+
+lm_AG30_64_std <- lm(Bev_Anteil_30_64 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final_std)
+#summary(lm_AG30_64_std)
+lm.beta(lm_AG30_64)
+
+# Homoskedastizität - A1
+ols_plot_resid_fit(lm_AG30_64) # sehr gleichmäßige Streuung der Residuen 
+ols_test_breusch_pagan(lm_AG30_64) # nicht signifikant -> keine Heteroskedastizität
+
+# Linearität - A3
+pairs(aVuV_final[,c(3, 5:14)], upper.panel = NULL) # Ausreißer bei Beherbergungsstätten (Oberwiesenthal) und ökonomischer Anziehung (Niederdorf)
+raintest(lm_AG30_64) # gerade so nicht signifikant, d.h. keine signifikante Verletzung von A3
+
+Res1 <- data.frame(stResiduen = scale(lm_AG30_64$residuals), st.fitted.values = scale(lm_AG30_64$fitted.values))
+cor.test(Res1$st.fitted.values, Res1$stResiduen) # nicht signifikant
+ggplot(Res1, aes(st.fitted.values, stResiduen))+
+geom_point()+
+geom_smooth(method = "loess")+
+xlab("standardisierte Fitted Values")+
+ylab("standardisierte Residuen")
+# Ausreißer beeinflussen Linearität, aber nicht signifikant
+
+# Autokorrelation - A4
+durbinWatsonTest(lm_AG30_64) # nicht signifikant (keine Autokorrelation 1. Ordnung)
+bgtest(lm_AG30_64, order = 1) # nicht signifikant (Breusch-Godfrey-Test)
+
+# Normalverteilung der Residuen - A5
+ols_plot_resid_hist(lm_AG30_64)
+ols_plot_resid_qq(lm_AG30_64)
+shapiro.test(lm_AG30_64$residuals) # Abweichung nicht signifikant
+
+skewness(lm_AG30_64$residuals) # 0.039 - sollte nahe 0 sein -> passt
+kurtosis(lm_AG30_64$residuals) # 2.847 - sollte nahe 3 sein -> passt
+agostino.test(lm_AG30_64$residuals) # nicht signifikant
+anscombe.test(lm_AG30_64$residuals) # nicht signifikant
+
+# Multikollinearität
+ols_vif_tol(lm_AG30_64) # Toleranz überall weit >0.2, und VIF < 5 -> keine ausgeprägte Multikollinearität
+
+# Ausreißer
+ols_plot_resid_stud(lm_AG30_64) # keine Ausreißer
+ols_plot_cooksd_chart(lm_AG30_64) # strengere Vorgabe - 24 (Heidersdorf), 25 (Hohndorf), 27 (Johanngeorgenstadt), 38 (Oberwiesenthal), 45 (Schneeberg) 
+ols_plot_resid_lev(lm_AG30_64) # Fälle 25, 27, 45 und 24, 38, 36 (Niederdorf) 
+ols_plot_dfbetas(lm_AG30_64) # Beobachtungen mit großem Einfluss auf Parameterschätzungen
+
+# Aufgrund von Ausreißern besser das Robustverfahren verwenden?
+rlm_AG30_64 <- rlm(Bev_Anteil_30_64 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final)
+summary(rlm_AG30_64)
+
+rlm_AG30_64_std <- rlm(Bev_Anteil_30_64 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final_std)
+summary(rlm_AG30_64_std)
+```
+
+### Regressionsvoraussetzungen AG UE65 Jahre
+
+```{r Residuendiagnostik AG ue65}
+lm_AGue65 <- lm(Bev_Anteil_UE65 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final)
+summary(lm_AGue65)
+
+lm_AGue65_std <- lm(Bev_Anteil_UE65 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final_std)
+#summary(lm_AGue65_std)
+lm.beta(lm_AGue65)
+
+# Homoskedastizität - A1
+ols_plot_resid_fit(lm_AGue65) # Ausreißer, aber sonst gleichmäßige Streuung der Residuen 
+ols_test_breusch_pagan(lm_AGue65) # nicht signifikant -> keine Heteroskedastizität
+
+# Linearität - A3
+pairs(aVuV_final[,c(4:14)], upper.panel = NULL) # Ausreißer bei Beherbergungsstätten (Oberwiesenthal) und ökonomischer Anziehung (Niederdorf)
+raintest(lm_AGue65) # nicht signifikant, d.h. keine Verletzung von A3
+
+Res1 <- data.frame(stResiduen = scale(lm_AGue65$residuals), st.fitted.values = scale(lm_AGue65$fitted.values))
+cor.test(Res1$st.fitted.values, Res1$stResiduen) # nicht signifikant
+ggplot(Res1, aes(st.fitted.values, stResiduen))+
+geom_point()+
+geom_smooth(method = "loess")+
+xlab("standardisierte Fitted Values")+
+ylab("standardisierte Residuen")
+# Ausreißer beeinflussen Linearität, aber nicht signifikant
+
+# Autokorrelation - A4
+durbinWatsonTest(lm_AGue65) # nicht signifikant (keine Autokorrelation 1. Ordnung)
+bgtest(lm_AGue65, order = 1) # nicht signifikant (Breusch-Godfrey-Test)
+
+# Normalverteilung der Residuen - A5
+ols_plot_resid_hist(lm_AGue65)
+ols_plot_resid_qq(lm_AGue65)
+shapiro.test(lm_AGue65$residuals) # Abweichung nicht signifikant
+
+skewness(lm_AGue65$residuals) # -0.197 - sollte nahe 0 sein -> passt
+kurtosis(lm_AGue65$residuals) # 3.537 - sollte nahe 3 sein -> passt
+agostino.test(lm_AGue65$residuals) # nicht signifikant
+anscombe.test(lm_AGue65$residuals) # nicht signifikant
+
+# Multikollinearität
+ols_vif_tol(lm_AGue65) # Toleranz überall weit >0.2, und VIF < 5 -> keine ausgeprägte Multikollinearität
+
+# Ausreißer
+ols_plot_resid_stud(lm_AGue65) # Fall 29 (Königswalde)
+ols_plot_cooksd_chart(lm_AGue65) # strengere Vorgabe - 5 (Bärenstein), 25 (Hohndorf), 29, 36 (Niederdorf), 52 (Tannenberg)
+ols_plot_resid_lev(lm_AGue65) # Fälle 42 (Raschau-Markersbach), 29, 24 (Heidersdorf), 38 (Oberwiesenthal), 36
+ols_plot_dfbetas(lm_AGue65) # Beobachtungen mit großem Einfluss auf Parameterschätzungen
+
+# Aufgrund von Ausreißern besser das Robustverfahren verwenden?
+rlm_AGue65 <- rlm(Bev_Anteil_UE65 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final)
+summary(rlm_AGue65)
+
+rlm_AGue65_std <- rlm(Bev_Anteil_UE65 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = data_final_std)
+summary(rlm_AGue65_std)
+```
+
+## Auswertung der OLS-Ergebnisse
+
+```{r Auswertung OLS}
+library(pwr)
+# statistische Power
+pwr.f2.test(u = 10, v = 59 - 10 - 1, f2 = 0.2, sig.level = 0.05)
+
+# AG u18
+summary(lm_AGu18_std)
+summary(rlm_AGu18_std)
+
+# Signifikanzen Robustschätzung:
+#2 * pt(-abs(-3.1821), 48)  # p-Wert Urbanisierung
+#2 * pt(-abs(1.9667), 48)  # p-Wert Gesamtveränderung-Saldo
+#2 * pt(-abs(-1.9544), 48)  # p-Wert Oekon_Anziehung # Niveau 0.1
+#2 * pt(-abs(-1.8514), 48)  # p-Wert C_PKW_Dist_km # Niveau 0.1
+#2 * pt(-abs(-1.7722), 48)  # p-Wert Anz_Beherbergung # Niveau 0.1
+
+# AG 18-29
+summary(lm_AG18_29_std)
+summary(rlm_AG18_29_std)
+
+# Signifikanzen Robustschätzung:
+#2 * pt(-abs(3.4682), 48)  # p-Wert Urbanisierung
+#2 * pt(-abs(2.8706), 48)  # p-Wert C_PKW_Dist_km
+#2 * pt(-abs(2.4404), 48)  # p-Wert Anteil_Landw_Fl
+#2 * pt(-abs(-2.1072), 48)  # p-Wert BeschQ_insg_2021
+#2 * pt(-abs(-1.6490), 48)  # p-Wert Bev_Anteil_Frau # knapp nicht mehr signifikant (Niveau 0.1)
+
+# AG 30-64
+summary(lm_AG30_64_std)
+summary(rlm_AG30_64_std)
+
+# Signifikanzen Robustschätzung:
+#2 * pt(-abs(-3.7613), 48)  # p-Wert Bev_Anteil_Frau
+#2 * pt(-abs(-1.7173), 48)  # p-Wert C_PKW_Dist_km # Niveau 0.1
+#2 * pt(-abs(-1.7290), 48)  # p-Wert Anteil_Landw_Fl # Niveau 0.1
+
+# AG ue64
+summary(lm_AGue65_std)
+summary(rlm_AGue65_std)
+
+# Signifikanzen Robustschätzung:
+#2 * pt(-abs(3.4494), 48)  # p-Wert Bev_Anteil_Frau
+#2 * pt(-abs(1.8643), 48)  # p-Wert Oekon_Anziehung # Niveau 0.1
+#2 * pt(-abs(-1.7173), 48) # p-Wert Gesamtveränderung-Saldo # Niveau 0.1
+```
+
+Das Modell ist für alle Gruppen signifikant und abgesehen von der Altersgruppe der unter 18-Jährigen konnten die Regressionsvoraussetzungen bestätigt werden. Bei den 18-29-Jährigen liegen Heteroskedastizität und Autokorrelation erster Ordnung vor. Für diese Gruppe hat das Modell auch seine geringste Erklärungskraft (adj. R2: 0.27). Die höchste Erklärungskraft hat das Modell für die Gruppe der u18-Jährigen (adj. R2: 0.47), gefolgt von den ü65-Jährigen (adj. R2: 0.4). Für explorative sozialwissenschaftliche Zwecke soll die Erklärungskraft der Modelle ausreichen.
+
+#### Modell u18 Jahre
+*OLS:* Res Std. Err: 0.728, R2: 0.555, adj. R2: 0.47
+Residualverteilung: Min: -1.4470, 1. Quartil: -0.5118, 0.0347, 3. Quartil: 0.3684, Max: 2.1396
+signifikante Effektstärken: Urbanisierung (-0.378), Gesamtveränderung-Saldo (0.231), Oekon. Anziehung (-0.250, Niveau 0.1), PKW-Distanz nach Chemnitz (-0.208, Niveau 0.1), Anzahl Beherbergungsstätten (-0.231, Niveau 0.1)
+
+*Std. Robust LM:* Res Std. Err: 0.592
+Residualverteilung: Min: -1.36219, 1. Quartil: -0.46001, Median: 0.03332, 3. Quartil: 0.33820, Max: 2.24947
+signifikante Effektstärken: Urbanisierung (-0.378), Gesamtveränderung-Saldo je 1000EW (0.22, Niveau 0.1), Ökonom. Anziehung (-0.237, Niveau 0.1), PKW-Distanz nach Chemnitz (-0.246, Niveau 0.1), Anzahl Beherbergungsstätten (-0.212, Niveau 0.1)
+
+Die Residuen der Robustschätzung zeigen eine ähnliche Verteilung wie das OLS-Modell, jedoch mit einer leicht erhöhten Maximalabweichung. Die robuste Methode reduziert die Standardabweichung der Residuen, was auf eine verbesserte Behandlung der Variabilität hinweist, allerdings gibt es immer noch erhebliche Ausreißer. 
+Der Gesamtveränderung-Saldo je 1000 EW ist in der Robustschätzung nicht mehr auf einem Niveau von 0.05 signifikant, bleibt allerdings im Bereich p < 0.1 und auch die Effektstärken der nur auf dem Niveau 0.1 signifikanten uV unterscheiden sich kaum von denen der OLS-Regression.
+
+#### Modell 18-29 Jahre
+!Vorsicht signifikante Heteroskedastizität & Autokorrelation!
+
+*OLS:* Res Std. Err: 0.855, R2: 0.395, adj. R2: 0.269
+Residualverteilung: Min: -2.2059, 1. Quartil: -0.3700, Median: 0.1302, 3. Quartil:0.4449, Max: 2.1824
+signifikante Effektstärken: PKW-Distanz nach Chemnitz (0.381), Anteil Landw. Fläche (0.365), Urbanisierung (0.327), Beschäftigungsquote (-0.276, Niveau 0.1)
+
+*Std. Robust LM:* Res Std. Err: 0.486
+Residualverteilung: Min: -2.34820, 1. Quartil: -0.36825, Median: 0.09946, 3. Quartil: 0.31774, Max: 2.16293
+signifikante Effektstärken: Urbanisierung (0.422), Anteil Landw. Fläche (0.331), PKW-Distanz nach Chemnitz (0.39), Beschäftigungsquote (-0.258, Niveau 0.1), Bevölkerungsanteil Frau (-0.223, Niveau 0.1 knapp verfehlt)
+
+Größere Streuung der Residuen im Vergleich zu den anderen Altersgruppen, die Validität der Ergebnisse ist durch die signifikante Heteroskedastizität und Autokorrelation beeinträchtigt. Die robuste Methode zeigt eine etwas engere Verteilung der Residuen und reduziert die Standardabweichung auf 0.486. Die Maximalabweichung ist etwas niedriger als bei OLS, was auf eine bessere Handhabung von Ausreißern hinweist. Auch die Verteilung ist insgesamt stabiler.
+In der OLS-Regression signifikante uV bleiben auch in der Robustschätzung signifikant; in der Robustschätzung ist die Effektstärke für Urbanisierung deutlich größer, während andere Effektstärken gleich oder etwas kleiner als die der OLS-Schätzung sind. 
+
+#### Modell 30-64 Jahre
+*OLS:* Res Std. Err: 0.816, R2: 0.449, adj. R2: 0.334
+Residualverteilung: Min: -1.84689, 1. Quartil: -0.53170, Median: 0.01466, 3. Quartil: 0.51737, Max: 1.89622
+signifikante Effektstärken: Bevölkerungsanteil Frau (-0.489), PKW-Distanz nach Chemnitz (-0.273, Niveau 0.1)
+
+*Std. Robust LM:* Res Std. Err: 0.505
+Residualverteilung: Min: -2.09965, 1. Quartil: -0.31908, Median: -0.03722, 3. Quartil: 0.45599, Max: 2.34791
+signifikante Effektstärken: Bevölkerungsanteil Frau (-0.637), PKW-Distanz nach Chemnitz (-0.321, Niveau 0.1), Ökon. Anziehung (-0.269, Niveau 0.1)
+
+Die Residuenverteilung ist breit, mit einer hohen maximalen Abweichung und einem Median nahe Null. Die hohe Standardabweichung (0.816) zeigt eine erhebliche Variabilität an, was auf Modellanpassungsprobleme oder fehlende Variablen hinweisen könnte. Die robuste Methode zeigt eine größere Streuung bei den Residuen als das OLS-Modell, insbesondere bei den Ausreißern, die Standardabweichung ist jedoch niedriger (0.505).
+Der Bevölkerungsanteil an Frauen je Gemeinde ist in beiden Schätzungen signifikant. Auf einem Signifikanzniveau von 0.1 kommt in der Robustschätzung die uV ökonomische Anziehung als möglicherweise interessante Variable hinzu. Effektstärken sind in der Robustschätzung deutlich größer.
+
+#### Modell ü65 Jahre
+*OLS:* Res Std. Err: 0.778, R2: 0.499, adj. R2: 0.395
+Residualverteilung: Min: -2.18748, 1. Quartil: -0.41530, Median: -0.03677, 3. Quartil: 0.46121, Max: 1.48854
+signifikante Effektstärken: Bevölkerungsanteil Frau (0.44), Ökonom. Anziehung (0.228, Niveau 0.1), Gesamtveränderung-Saldo je 1000EW (-0.212, Niveau 0.1)
+
+*Std. Robust LM:* Res Std. Err: 0.711
+Residualverteilung: Min: -2.30060, 1. Quartil: -0.43018, Median: -0.01536, 3. Quartil: 0.47060, Max: 1.41940
+signifikante Effektstärken: Bevölkerungsanteil Frau (0.485), Ökonom. Anziehung (0.241, Nivau 0.1), Gesamtveränderung-Saldo je 1000EW (-0.204, Niveau 0.1)
+
+Die Residuenverteilung ist in beiden Schätzungen relativ breit und die Standardabweichung relativ hoch. Ausreißer beeinträchtigen die Schätzung.
+Der Effekt vom Bevölkerungsanteil der Frauen je Gemeinde ist in beiden Schätzungen signifikant. Ebenfalls nahezu signifikant sind ökonom. Anziehung und der Gesamtveränderung-Saldo je 1000 EW. In der Robustschätzung sind die Effektstärken größer.
+
+### Effekte Altersgruppenvergleich:
+- Bev_Anteil_Frau: Starker und signifikanter negativer Effekt (OLS: -0.488, Robust: -0.637) bei 30-64-Jährigen, stark positiver und signifikanter Effekt bei über 65-Jährigen (OLS: 0.439, Robust: 0.485). Bei jüngeren Altersgruppen negative und nicht signifikante Effekte.
+- Urbanisierung: Positiver Effekt auf 18-29-Jährige (signifikant, OLS: 0.327, Robust: 0.422), negativer Effekt auf unter 18-Jährige (signifikant, OLS: -0.378, Robust: -0.378), für ältere Altersgruppen schwache und nicht signifikante Effekte.
+- C_PKW_Dist_km: Positive Effekte bei 18-29-Jährigen (signifikant, OLS: 0.381, Robust: 0.39) und ü65-Jährigen (nicht signifikant). Negative Effekte bei u18 (nicht signifikant) und 30-64-Jährigen (knapp nicht signifikant, OLS: -0.273, Robust: -0.321). 
+- Oekon_Anziehung: Negativer Effekt bei u18-Jährigen (signifikant, OLS: -0.25, Robust: -0.237), 30-64-Jährigen (nicht signifikant), positiver Effekt bei ü65-Jährigen (knapp nicht signifikant, OLS: 0.227, Robust: 0.241).
+- Ges_Ver_Saldo_je_1000ew_2021: Wirkt meist positiv (u18: signifikant mit OLS: 0.231, Robust: -0.22; bei 18-29 und 30-64 nicht signifikant), und negativ nur bei über 65-Jährigen (knapp nicht signifikant, OLS: -0.212, Robust: -0.204).
+- Anteil_Landw_Fl: Wirkt positiv auf unter 18-Jährige (nicht signifikant) und 18-29-Jährige (signifikant, OLS: 0.365, Robust: 0.331), negativ auf über 65-Jährige (nicht signifikant, OLS: -0.231, Robust: -0.222).
+- BeschQ_insg_2021: Negativer Effekt für 18-29-Jährige (knapp nicht signifikant, OLS: -0.276, Robust: -0.258).
+- Anz_Beherbergung: Negative Effekte für u18-Jährige (knapp nicht signifikant, OLS: -0.231, Robust: 0.212) und 30-64-Jährige (nicht signifikant), positiv bei über 65-Jährigen (nicht signifikant) und 18-29-Jährigen (nicht signifikant).
+- Reise_OzMz: Schwach negative Effekte bei den AGs u18 und 18-29 (nicht signifikant, zw. 0.12 und 0.23), schwach positive Effekte bei den älteren AGs (nicht signifikant, <0.1).
+- Anz_Betr_Sek_Sektor: Keine signifikanten und sehr schwache Effekte (schwach positiv bei den jüngeren AGs, schwach negativ bei älteren Ags).
+
+
+### Backward Elimination
+
+```{r Backward Elimination}
+# AIC (Akaike’s information criterion)
+# kleinerer AIC -> bessere Modellpassung (model parsimony)
+
+lm_AGu18_2 = step(lm_AGu18)
+summary(lm_AGu18_2)
+# Entfernte uV: Beschäftigungsquote, Anzahl Betriebe Sek. Sektor, Bevölkerungsanteil Frau, Reisedauer Ober-/Mittelzentrum
+
+lm_AG18_29_2 = step(lm_AG18_29)
+summary(lm_AG18_29_2)
+# Entfernte uV: Ökonomische Anziehung, Anzahl Betriebe Sek. Sektor, Gesamtveränderung-Saldo
+
+lm_AG30_64_2 = step(lm_AG30_64)
+summary(lm_AG30_64_2)
+# Entfernte uV: Beschäftigungsquote, Anteil Landwirtschaftsfläche, Urbanisierung, Anzahl Betriebe sek. Sektor, Gesamtveränderung-Saldo, Reisedauer Ober-/Mittelzentrum, Anzahl Beherbergungsstätten
+
+lm_AGue65_2 = step(lm_AGue65)
+summary(lm_AGue65_2)
+# Entfernte uV: Anzahl Betriebe sek. Sektor, Beschäftigungsquote, Urbanisierung, Reisedauer Ober-/Mittelzentrum, PKW-Distanz nach Chemnitz, Anzahl Beherbergungsstätten
+
+
+# BIC (Schwartz’s Bayesian information criterion)
+# kleinerer BIC -> bessere Modellpassung (model parsimony)
+lm_AGu18_3 = step(lm_AGu18, k=log(59))
+summary(lm_AGu18_3)
+# Entfernte uV: Beschäftigungsquote, Anzahl Betriebe Sek. Sektor, Bevölkerungsanteil Frau, Reisedauer Ober-/Mittelzentrum, Anteil Landwirtschaftsfläche, PKW-Distanz nach Chemnitz
+
+lm_AG18_29_3 = step(lm_AG18_29, k=log(59))
+summary(lm_AG18_29_3)
+# Entfernte uV: Ökonomische Anziehung, Anzahl Betriebe Sek. Sektor, Gesamtveränderung-Saldo, Anzahl Beherbergungsstätten, Bevölkerungsanteil Frau, Reisedauer Ober-/Mittelzentrum
+
+lm_AG30_64_3 = step(lm_AG30_64, k=log(59))
+summary(lm_AG30_64_3)
+# Entfernte uV: Beschäftigungsquote, Anteil Landwirtschaftsfläche, Urbanisierung, Anzahl Betriebe sek. Sektor, Gesamtveränderung-Saldo, Reisedauer Ober-/Mittelzentrum, Anzahl Beherbergungsstätten, Ökonomische Anziehung
+
+lm_AGue65_3 = step(lm_AGue65, k=log(59))
+summary(lm_AGue65_3)
+# Entfernte uV: Anzahl Betriebe sek. Sektor, Beschäftigungsquote, Urbanisierung, Reisedauer Ober-/Mittelzentrum, PKW-Distanz nach Chemnitz, Anzahl Beherbergungsstätten, Ökonom. Anziehung, Gesamtveränderung-Saldo
+```
+
+BIC sortiert stärker aus. In allen Altersgruppen fällt die uV Anzahl Betriebe sek. Sektor heraus. Abgesehen vom AIC bei der Altersgruppe der 18-29-Jährigen fällt überall auch die Reisedauer ins nächste Ober-/Mittelzentrum heraus. Auch die Beschäftigungsquote bleibt als einziges in der Gruppe der 18-29-Jährigen erhalten. Für eine Komplexitätsreduktion des Modells kämen vor allem die Anzahl an Betrieben im sekundären Sektor und die Reisedauer ins nächste Ober-/Mittelzentrum zur Entfernung infrage. Theoretisch finde ich diese Variablen dennoch relevant, und möchte sie gern auch mittels der Spatial Regression untersuchen.
+
+### Bootstrapping
+
+```{r Bootstrapping}
+set.seed(100)
+
+boot_AGu18 <- Boot(lm_AGu18_std, R=5000)
+summary(boot_AGu18)
+confint(boot_AGu18, level = .95)
+confint(boot_AGu18, level = .90)
+#hist(boot_AGu18)
+
+boot_AG18_29 <- Boot(lm_AG18_29_std, R=5000)
+summary(boot_AG18_29)
+confint(boot_AG18_29, level = .95)
+confint(boot_AG18_29, level = .90)
+#hist(boot_AG18_29)
+
+boot_AG30_64 <- Boot(lm_AG30_64_std, R=5000)
+summary(boot_AG30_64)
+confint(boot_AG30_64, level = .95)
+confint(boot_AG30_64, level = .90)
+#hist(boot_AG30_64)
+
+boot_AGue65 <- Boot(lm_AGue65_std, R=5000)
+summary(boot_AGue65)
+confint(boot_AGue65, level = .95)
+confint(boot_AGue65, level = .90)
+#hist(boot_AGue65)
+```
+
+#### Auswertung
+
+Die Bootstrap-Mediane weichen von den Effektstärken der normalen OLS-Schätzung kaum ab.
+Im allgemeinen werden durch das Bootstrapping weniger Variablen signifikant:
+
+*AGu18:*
+Signifikant: Urbanisierung (Median: -0.387), Gesamtveränderung-Saldo (Median: 0.248)
+Nicht signifikant: Ökonom. Anziehung (Median: -0.23), Anzahl an Beherbergungsstätten (Median: -0.226), PKW-Distanz nach Chemnitz (Median: -0.209)
+
+*AG18-29:*
+Signifikant: Anteil Landwirtschaftsfläche (Median: 0.359), PKW-Distanz nach Chemnitz (Median: 0.368)
+Nicht signifikant: Urbanisierung (0.304), Beschäftigungsquote (Median: -0.272)
+
+*AG30-64:*
+Signifikant: Bevölkerungsanteil Frau (Median: -0.505)
+Nicht signifikant: PKW-Distanz nach Chemnitz (Median: -0.268), Ökonomische Anziehung (-0.189)
+
+*AGue65:*
+Signifikant: Bevölkerungsanteil Frau (Median: 0.437)
+Auf dem Niveau 0.1 signifikant: Anteil Landwirtschaftsfläche (Median: -0.235)
+
+Bootstrapping liefert robustere Schätzungen, führt aber durch die Neigung zur Produktion größerer Standardfehler und breiteren Konfidenzintervallen zu weniger signifikanten Variablen. Durch die Stichprobenziehung wird die Schätzung konservativer und robuster gegen Ausreißer. Dass Bootstrapping keine Annahmen über die Residuenverteilung erfordert, ist insbesondere für die AG18-29 relevant. Hier hat sich gezeigt, dass einige unabhängige Variablen auch nach Bootstrapping signifikant blieben, und dass die Effektstärken kaum von denen der OLS-Regression abweichen. Daher sind die ursprünglichen OLS-Koeffizienten gute Schätzer für die Effekte; Bootstrapping bringt zusätzliche Sicherheit und Stabilität in die Signifikanztests.
+
+```{r Modellvergleich}
+### Modellvergleich
+AIC(lm_AGu18_std, rlm_AGu18) # niedrigster AIC: OLS
+AIC(lm_AG18_29_std, rlm_AG18_29_std) # niedrigster AIC: OLS
+AIC(lm_AG30_64_std, rlm_AG30_64_std) # niedrigster AIC: OLS
+AIC(lm_AGue65_std, rlm_AGue65_std) # niedrigster AIC: knapp OLS
+```
+
+### Tabelle Modellvergleich
+
+```{r Tabelle Modellvergleich}
+# Funktion: OLS
+extract_lm_results <- function(model) {
+  summary_model <- summary(model)
+  coefficients <- summary_model$coefficients
+  data.frame(
+    Variable = rownames(coefficients),
+    Effect_lm = coefficients[, "Estimate"],
+    SE_lm = coefficients[, "Std. Error"],
+    pValue_lm = coefficients[, "Pr(>|t|)"]
+  )
+}
+
+# Berechnungsfunktion für approximative p-Werte aus der t-Statistik
+calculate_p_values <- function(t_values, df) {
+  2 * pt(-abs(t_values), df = df)
+}
+
+# Funktion: Robust Regression
+extract_rlm_results <- function(model, df) {
+  # Extrahiere Koeffizienten
+  coefficients <- summary(model)$coefficients
+  # Berechne t-Werte
+  t_values <- coefficients[, "Value"] / coefficients[, "Std. Error"]
+  # Berechne p-Werte
+  p_values <- calculate_p_values(t_values, df)
+  data.frame(
+    Variable = rownames(coefficients),
+    Effect_rlm = coefficients[, "Value"],
+    SE_rlm = coefficients[, "Std. Error"],
+    pValue_rlm = p_values
+  )
+}
+
+# Funktion: Bootstrapping
+extract_boot_results <- function(model) {
+  boot_median <- apply(model$t, 2, median)
+  boot_ci_95 <- t(apply(model$t, 2, function(x) quantile(x, c(0.025, 0.975))))
+  boot_ci_90 <- t(apply(model$t, 2, function(x) quantile(x, c(0.05, 0.95))))
+  boot_ci_99 <- t(apply(model$t, 2, function(x) quantile(x, c(0.01, 0.99))))
+  
+  data.frame(
+    Variable = names(boot_median),
+    Median_boot = boot_median,
+    SE_boot = apply(model$t, 2, sd),
+    Lower_CI_95 = boot_ci_95[, 1],
+    Upper_CI_95 = boot_ci_95[, 2],
+    Lower_CI_90 = boot_ci_90[, 1],
+    Upper_CI_90 = boot_ci_90[, 2],
+    Lower_CI_99 = boot_ci_99[, 1],
+    Upper_CI_99 = boot_ci_99[, 2]
+  )
+}
+
+# Extraktion der Ergebnisse für jede Altersgruppe
+results_lm_u18 <- extract_lm_results(lm_AGu18_std)
+results_rlm_u18 <- extract_rlm_results(rlm_AGu18_std, 48)
+results_boot_u18 <- extract_boot_results(boot_AGu18)
+
+results_lm_18_29 <- extract_lm_results(lm_AG18_29_std)
+results_rlm_18_29 <- extract_rlm_results(rlm_AG18_29_std, 48)
+results_boot_18_29 <- extract_boot_results(boot_AG18_29)
+
+results_lm_30_64 <- extract_lm_results(lm_AG30_64_std)
+results_rlm_30_64 <- extract_rlm_results(rlm_AG30_64_std, 48)
+results_boot_30_64 <- extract_boot_results(boot_AG30_64)
+
+results_lm_ue65 <- extract_lm_results(lm_AGue65_std)
+results_rlm_ue65 <- extract_rlm_results(rlm_AGue65_std, 48)
+results_boot_ue65 <- extract_boot_results(boot_AGue65)
+
+# Zusammenführen
+combine_results <- function(lm_results, rlm_results, boot_results, age_group) {
+  combined <- lm_results %>%
+    left_join(rlm_results, by = "Variable") %>%
+    left_join(boot_results, by = "Variable")
+  
+  combined$Altersgruppe <- age_group
+  combined
+}
+
+results_u18 <- combine_results(results_lm_u18, results_rlm_u18, results_boot_u18, "AG_u18")
+results_18_29 <- combine_results(results_lm_18_29, results_rlm_18_29, results_boot_18_29, "AG_18_29")
+results_30_64 <- combine_results(results_lm_30_64, results_rlm_30_64, results_boot_30_64, "AG_30_64")
+results_ue65 <- combine_results(results_lm_ue65, results_rlm_ue65, results_boot_ue65, "AG_ue65")
+
+results <- bind_rows(results_u18, results_18_29, results_30_64, results_ue65)
+
+# Neuordnung der Spalten
+#detach("package:MASS", unload = TRUE)
+#results <- results %>%
+#  select(Altersgruppe, Variable, Effect_lm, SE_lm, pValue_lm, Effect_rlm, SE_rlm, pValue_rlm, Median_boot, SE_boot, Lower_CI_95, Upper_CI_95, Lower_CI_90, Upper_CI_90, Lower_CI_99, Upper_CI_99)
+#print(results)
+
+#write.csv(results, "Regressionen_Vgl_Altersgruppen.csv", row.names = FALSE)
+#write.xlsx(results, "Regressionen_Vgl_Altersgruppen.xlsx", overwrite = T)
+```

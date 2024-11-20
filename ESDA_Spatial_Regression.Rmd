@@ -1,0 +1,3031 @@
+---
+title: "Masterarbeit_ESDA_und_Spatial_Regression"
+output: html_document
+date: "2024-11-20"
+---
+
+# Titel: Einflussfaktoren auf das Altersprofil von ländlichen Gemeinden - Eine explorative Untersuchung am Beispiel des Erzgebirges
+
+Alisa Sophie Naumann  
+Waiblinger Straße 17  
+71404 Korb
+
+Matr.-Nr.: 3516009  
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+getwd()
+knitr::opts_knit$set(root.dir = '/Users/alisanaumann/Desktop/Erzgebirgskreis_Analyse/Daten/')
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+### Packages
+
+```{r, include=FALSE}
+#library(openxlsx)
+#library(dplyr)
+#library(sf)
+#library(ggplot2)
+#library(patchwork)
+#library(tmap)
+#library(leaflet)
+#library(RColorBrewer)
+#library(htmlwidgets)
+#library(htmltools)
+#library(treemap)
+#library(sp)
+#library(summarytools)
+#library(MVN)
+#library(psych)
+#library(corrplot)
+#library(car)
+#library(splithalfr)
+#library(spdep)
+#library(geoR)
+#library(maps)
+#library(ggmap)
+#library(tmap)
+#library(RgoogleMaps)
+#library(spatstat)
+#library(spgrw)
+```
+
+### Daten
+
+```{r daten}
+library(openxlsx)
+library(dplyr)
+library(sf)
+
+ESDA <- read.xlsx("Variablen_ESDA.xlsx")
+summary(ESDA)
+
+ESDA_std <- read.xlsx("Variablen_ESDA_std.xlsx")
+summary(ESDA_std)
+
+ESDA_long <- reshape(ESDA, 
+                      varying = list(names(ESDA)[3:6]), 
+                      v.names = "Anteil", 
+                      timevar = "Altersgruppe", 
+                      times = names(ESDA)[3:6], 
+                      direction = "long")
+ESDA_long <- ESDA_long[order(ESDA_long$Gemeinde), ]
+
+ESDA_long <- ESDA_long %>%
+  mutate(Altersgruppe = recode(Altersgruppe, "Bev_Anteil_U18" = "u18 Jahre",
+                               "Bev_Anteil_18_29" = "18-29 Jahre",
+                               "Bev_Anteil_30_64" = "30-64 Jahre",
+                               "Bev_Anteil_UE65" = "ü65 Jahre"))
+table(ESDA_long$Altersgruppe)
+
+# Verknüpfung der Shape-Datei mit den Gemeindedaten
+Gemeinden <- st_read("Gemeinden.shp")
+Gemeinden_wide <- merge(Gemeinden, ESDA, by.x = "SCHLUESSEL", by.y = "Schluesselnummer", all.x = TRUE)
+Gemeinden_long <- merge(Gemeinden, ESDA_long, by.x = "SCHLUESSEL", by.y = "Schluesselnummer", all.x = TRUE)
+
+# Standardisierte Werte
+Gemeinden <- st_read("Gemeinden.shp")
+Gemeinden_wide_std <- merge(Gemeinden, ESDA_std, by.x = "SCHLUESSEL", by.y = "Schluesselnummer", all.x = TRUE)
+
+#save(Gemeinden_long, file = "Gemeinden_long.csv")
+#save(Gemeinden_wide, file = "Gemeinden_wide.csv")
+#save(Gemeinden_wide_std, file = "Gemeinden_wide_std.csv")
+
+#load("Gemeinden_long.csv")
+#load("Gemeinden_wide.csv")
+#load("Gemeinden_wide_std.csv")
+```
+
+## Visualisierung der Anteile der Altersgruppen an Gemeinden
+
+### Choroplethenkarten: ggplot2
+
+```{r Choroplethenkarten ggplot2}
+library(ggplot2)
+library(patchwork)
+## Kürzen der Gemeindenamen auf fünf Buchstaben
+Gemeinden_wide$short_name <- substr(Gemeinden_wide$Gemeinde, 1, 5)
+
+## Centroids berechnen
+Gemeinden_wide <- Gemeinden_wide %>%
+  mutate(
+    centroid = st_centroid(geometry),         # Berechne den Mittelpunkt
+    label_x = st_coordinates(centroid)[,1],  # Extrahiere x-Koordinaten des Mittelpunkts
+    label_y = st_coordinates(centroid)[,2]   # Extrahiere y-Koordinaten des Mittelpunkts
+  )
+
+# Funktion
+plot_map_1 <- function(data, age_group, title) {
+  ggplot(data) +
+    geom_sf(aes(fill = !!sym(age_group))) +
+    geom_text(aes(x = label_x, y = label_y, label = short_name), size = 1.5, color = "white", check_overlap = TRUE) +
+    scale_fill_viridis_c(option = "cividis") +
+    labs(title = title, fill = "Anteil (%)") +
+    theme_minimal() +
+    theme(axis.title = element_blank())
+}
+
+# Einzelne Plots
+plot1_u18 <- plot_map_1(Gemeinden_wide, "Bev_Anteil_U18", "Altersgruppe: unter 18 Jahre")
+plot1_18_29 <- plot_map_1(Gemeinden_wide, "Bev_Anteil_18_29", "Altersgruppe: ab 18 bis 29 Jahre")
+plot1_30_64 <- plot_map_1(Gemeinden_wide, "Bev_Anteil_30_64", "Altersgruppe: ab 30 bis 64 Jahre")
+plot1_ue65 <- plot_map_1(Gemeinden_wide, "Bev_Anteil_UE65", "Altersgruppe: ab 65 Jahre")
+
+# Anordnen der Plots
+all_plots1 <- (plot1_u18 + plot1_18_29) / (plot1_30_64 + plot1_ue65)
+all_plots1
+
+#plot1_u18 / plot1_18_29
+#plot1_30_64 / plot1_ue65
+```
+
+### Choroplethenkarten: tmap
+
+```{r Choroplethenkarten tmap}
+library(tmap)
+
+plot_map_2 <- function(data, age_group, title) {
+  tm_shape(data) +
+    tm_polygons(age_group, title = title,
+                palette = "cividis", style = "quantile") +
+    tm_text("short_name", size = 0.4, root = 5) +
+    tm_layout(legend.text.size = 0.8, legend.title.size = 1.0, 
+              legend.outside = TRUE, legend.outside.position = "bottom")
+}
+
+plot2_u18 <- plot_map_2(Gemeinden_wide, "Bev_Anteil_U18", "Altersgruppe: unter 18 Jahre (%)")
+plot2_18_29 <- plot_map_2(Gemeinden_wide, "Bev_Anteil_18_29", "Altersgruppe: ab 18 bis 29 Jahre (%)")
+plot2_30_64 <- plot_map_2(Gemeinden_wide, "Bev_Anteil_30_64", "Altersgruppe: ab 30 bis 64 Jahre (%)")
+plot2_ue65 <- plot_map_2(Gemeinden_wide, "Bev_Anteil_UE65", "Altersgruppe: ab 65 Jahre (%)")
+
+# Anordnen der Plots
+all_plots2 <- tmap_arrange(plot2_u18, plot2_18_29, plot2_30_64, plot2_ue65, ncol = 2, nrow = 2)
+all_plots2
+```
+
+### Interaktive Karte: Leaflet
+
+```{r Leaflet}
+library(leaflet)
+library(RColorBrewer)
+library(htmlwidgets)
+library(htmltools)
+
+# CRS (Koordinatenbezugssystem) von EPSG:25833 in WGS84 ändern
+st_crs(Gemeinden_wide)
+Gemeinden_wide_WGS84 <- st_transform(Gemeinden_wide, crs = st_crs("+proj=longlat +datum=WGS84"))
+
+# Farbpaletten und Quartile für jede Altersgruppe definieren
+color_palette_u18 <- colorRampPalette(brewer.pal(9, "BuGn"))(100)
+color_palette_18_29 <- colorRampPalette(brewer.pal(9, "YlGnBu"))(100)
+color_palette_30_64 <- colorRampPalette(brewer.pal(9, "PuRd"))(100)
+color_palette_ue65 <- colorRampPalette(brewer.pal(9, "OrRd"))(100)
+
+quartiles_u18 <- quantile(Gemeinden_wide_WGS84$Bev_Anteil_U18, probs = seq(0, 1, 0.25))
+quartiles_18_29 <- quantile(Gemeinden_wide_WGS84$Bev_Anteil_18_29, probs = seq(0, 1, 0.25))
+quartiles_30_64 <- quantile(Gemeinden_wide_WGS84$Bev_Anteil_30_64, probs = seq(0, 1, 0.25))
+quartiles_ue65 <- quantile(Gemeinden_wide_WGS84$Bev_Anteil_UE65, probs = seq(0, 1, 0.25))
+
+color_fun_u18 <- colorBin(palette = color_palette_u18, domain = Gemeinden_wide_WGS84$Bev_Anteil_U18, bins = quartiles_u18, na.color = "transparent", pretty = FALSE)
+color_fun_18_29 <- colorBin(palette = color_palette_18_29, domain = Gemeinden_wide_WGS84$Bev_Anteil_18_29, bins = quartiles_18_29, na.color = "transparent", pretty = FALSE)
+color_fun_30_64 <- colorBin(palette = color_palette_30_64, domain = Gemeinden_wide_WGS84$Bev_Anteil_30_64, bins = quartiles_30_64, na.color = "transparent", pretty = FALSE)
+color_fun_ue65 <- colorBin(palette = color_palette_ue65, domain = Gemeinden_wide_WGS84$Bev_Anteil_UE65, bins = quartiles_ue65, na.color = "transparent", pretty = FALSE)
+
+# Labels für die Legenden basierend auf den Quartilen, gerundet auf eine Nachkommastelle
+legend_labels_u18 <- paste0(
+  round(quartiles_u18[-length(quartiles_u18)], 1), " - ", round(quartiles_u18[-1], 1), "%"
+)
+legend_labels_18_29 <- paste0(
+  round(quartiles_18_29[-length(quartiles_18_29)], 1), " - ", round(quartiles_18_29[-1], 1), "%"
+)
+legend_labels_30_64 <- paste0(
+  round(quartiles_30_64[-length(quartiles_30_64)], 1), " - ", round(quartiles_30_64[-1], 1), "%"
+)
+legend_labels_ue65 <- paste0(
+  round(quartiles_ue65[-length(quartiles_ue65)], 1), " - ", round(quartiles_ue65[-1], 1), "%"
+)
+
+# Leaflet Karte erstellen
+map <- leaflet(data = Gemeinden_wide_WGS84) %>%
+  addTiles() %>%
+  addPolygons(group = "Unter 18 Jahre", fillColor = ~color_fun_u18(Bev_Anteil_U18),
+              fillOpacity = 0.8, color = "#BDBDC3", stroke = TRUE, weight = 1,
+              popup = ~paste(
+                "<b>", Gemeinde, "</b>", "<br>",
+                "<em>", "Bevölkerungsanzahl: ", format(Bev_Gesamt_2021, big.mark = ".", scientific = FALSE), "</em>", "<br>",
+                "Unter 18 Jahre: ", round(Bev_Anteil_U18, digits = 1), "%", "<br>",
+                "18 bis 29 Jahre: ", round(Bev_Anteil_18_29, digits = 1), "%", "<br>",
+                "30 bis 64 Jahre: ", round(Bev_Anteil_30_64, digits = 1), "%", "<br>",
+                "Ab 65 Jahre: ", round(Bev_Anteil_UE65, digits = 1), "%"
+              )) %>%
+  addPolygons(group = "18 bis 29 Jahre", fillColor = ~color_fun_18_29(Bev_Anteil_18_29),
+              fillOpacity = 0.8, color = "#BDBDC3", stroke = TRUE, weight = 1,
+              popup = ~paste(
+                "<b>", Gemeinde, "</b>", "<br>",
+                "<em>", "Bevölkerungsanzahl: ", format(Bev_Gesamt_2021, big.mark = ".", scientific = FALSE), "</em>", "<br>",
+                "Unter 18 Jahre: ", round(Bev_Anteil_U18, digits = 1), "%", "<br>",
+                "18 bis 29 Jahre: ", round(Bev_Anteil_18_29, digits = 1), "%", "<br>",
+                "30 bis 64 Jahre: ", round(Bev_Anteil_30_64, digits = 1), "%", "<br>",
+                "Ab 65 Jahre: ", round(Bev_Anteil_UE65, digits = 1), "%"
+              )) %>%
+  addPolygons(group = "30 bis 64 Jahre", fillColor = ~color_fun_30_64(Bev_Anteil_30_64),
+              fillOpacity = 0.8, color = "#BDBDC3", stroke = TRUE, weight = 1,
+              popup = ~paste(
+                "<b>", Gemeinde, "</b>", "<br>",
+                "<em>", "Bevölkerungsanzahl: ", format(Bev_Gesamt_2021, big.mark = ".", scientific = FALSE), "</em>", "<br>",
+                "Unter 18 Jahre: ", round(Bev_Anteil_U18, digits = 1), "%", "<br>",
+                "18 bis 29 Jahre: ", round(Bev_Anteil_18_29, digits = 1), "%", "<br>",
+                "30 bis 64 Jahre: ", round(Bev_Anteil_30_64, digits = 1), "%", "<br>",
+                "Ab 65 Jahre: ", round(Bev_Anteil_UE65, digits = 1), "%"
+              )) %>%
+  addPolygons(group = "Ab 65 Jahre", fillColor = ~color_fun_ue65(Bev_Anteil_UE65),
+              fillOpacity = 0.8, color = "#BDBDC3", stroke = TRUE, weight = 1,
+              popup = ~paste(
+                "<b>", Gemeinde, "</b>", "<br>",
+                "<em>", "Bevölkerungsanzahl: ", format(Bev_Gesamt_2021, big.mark = ".", scientific = FALSE), "</em>", "<br>",
+                "Unter 18 Jahre: ", round(Bev_Anteil_U18, digits = 1), "%", "<br>",
+                "18 bis 29 Jahre: ", round(Bev_Anteil_18_29, digits = 1), "%", "<br>",
+                "30 bis 64 Jahre: ", round(Bev_Anteil_30_64, digits = 1), "%", "<br>",
+                "Ab 65 Jahre: ", round(Bev_Anteil_UE65, digits = 1), "%"
+              )) %>%
+  addLegend(group = "Unter 18 Jahre", pal = color_fun_u18, values = Gemeinden_wide_WGS84$Bev_Anteil_U18,
+            title = "Unter 18 Jahre", opacity = 0.8, labFormat = labelFormat(suffix = "%", digits = 1),
+            labels = legend_labels_u18, position = "topright") %>%
+  addLegend(group = "18 bis 29 Jahre", pal = color_fun_18_29, values = Gemeinden_wide_WGS84$Bev_Anteil_18_29,
+            title = "18 bis 29 Jahre", opacity = 0.8, labFormat = labelFormat(suffix = "%", digits = 1),
+            labels = legend_labels_18_29, position = "topright") %>%
+  addLegend(group = "30 bis 64 Jahre", pal = color_fun_30_64, values = Gemeinden_wide_WGS84$Bev_Anteil_30_64,
+            title = "30 bis 64 Jahre", opacity = 0.8, labFormat = labelFormat(suffix = "%", digits = 1),
+            labels = legend_labels_30_64, position = "topright") %>%
+  addLegend(group = "Ab 65 Jahre", pal = color_fun_ue65, values = Gemeinden_wide_WGS84$Bev_Anteil_UE64,
+            title = "Ab 65 Jahre", opacity = 0.8, labFormat = labelFormat(suffix = "%", digits = 1),
+            labels = legend_labels_ue65, position = "topright") %>%
+  addLayersControl(
+    baseGroups = c("Unter 18 Jahre", "18 bis 29 Jahre", "30 bis 64 Jahre", "Ab 65 Jahre"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  hideGroup(c("18 bis 29 Jahre", "30 bis 64 Jahre", "Ab 65 Jahre"))  # Standardmäßig nur die erste Gruppe anzeigen
+
+map <- addProviderTiles(map, "CartoDB.Positron")
+
+# HTML-Tag für den Titel
+title_html <- tags$div(
+  style = "position: absolute; bottom: 20px; left: 20px; z-index: 1000; background-color: white; padding: 10px; border: 1px solid #ccc; font-size: 14px; font-family: 'Helvetica Neue', Arial, Helvetica, sans-serif;",
+  tags$h3("Altersgruppenanteile je Gemeinde im Jahr 2021")
+)
+map <- htmlwidgets::prependContent(map, title_html)
+
+map
+
+#saveWidget(map, file = "interaktive_karte.html", selfcontained = TRUE)
+#rm(title_html)
+```
+
+
+## Nachbarschaftsstruktur und räumliche Gewichtungsmatrix
+
+```{r Nachbarschaft}
+library(spdep)
+
+# Nachbarschaftsstruktur
+row.names(Gemeinden_wide) <- Gemeinden_wide$Gemeinde
+NM <- poly2nb(Gemeinden_wide, queen = T) # Queen's Case
+summary(NM)
+NM_rook <- poly2nb(Gemeinden_wide, queen = F) # Rook's Case
+summary(NM_rook)
+
+### räumliche Gewichtungsmatrix
+
+# standardisierte Gewichte (Zeilensummenstandardisiert - Anzahl an Nachbarn jeder Gemeinde wird berücksichtigt; Summe der Gewichte ist für jede räumliche Einheit = 1 -> Gleichgewichtung der räumlichen Einheiten)
+NM_weights <- nb2listw(NM, style = "W", zero.policy = TRUE) # mit dieser Option würden Gewichtungsvektoren der Länge 0 zugelassen werden - in dem Fall überflüssig, da jede Gemeinde mind. 1 Nachbarn hat 
+summary(NM_weights)
+
+# binäre Gewichte (0/1-Gewichtung für kein Nachbar/Nachbar)
+NM_binary <- nb2listw(NM, style = "B", zero.policy = TRUE)
+summary(NM_binary)
+
+Gemeinden_Geoms <- st_geometry(Gemeinden_wide)
+cntrd <- st_centroid(Gemeinden_Geoms)
+coords <- st_coordinates(cntrd)
+
+plot(NM_binary, coords, col = "black", cex = 0.1)
+```
+
+## Visualisierung der uV
+
+### Choroplethenkarten: ggplot2
+
+```{r uV Choroplethenkarten ggplot2}
+library(viridis)
+#uV <- c("Bev_Anteil_Frau", "Ges_Ver_Saldo_je_1000ew_2021", "Urbanisierung", "Anteil_Landw_Fl", "Oekon_Anziehung", "Anz_Betr_Sek_Sektor", "Reise_OzMz", "C_PKW_Dist_km", "Anz_Beherbergung", "BeschQ_insg_2021")
+
+plot_uV <- function(data, variable, title, unit) {
+  ggplot(data) +
+    geom_sf(aes_string(fill = variable)) +
+    geom_text(aes(x = label_x, y = label_y, label = short_name), size = 2, color = "white", check_overlap = TRUE) +
+    scale_fill_viridis_c(option = "cividis") +
+    labs(title = title, fill = unit) +
+    theme_minimal() +
+    theme(axis.title = element_blank())
+}
+
+plot1_Bev_Anteil_Frau <- plot_uV(Gemeinden_wide, "Bev_Anteil_Frau", "Bevölkerungsanteil der Frauen", "Anteil (%)")
+plot1_Ges_Ver_Saldo <- plot_uV(Gemeinden_wide, "Ges_Ver_Saldo_je_1000ew_2021", "Gesamtveränderungssaldo je 1000 Einwohner", "Saldo je 1000 EW")
+plot1_Urbanisierung <- plot_uV(Gemeinden_wide, "Urbanisierung", "Urbanisierung", "Score")
+#str(Gemeinden_wide$Urbanisierung)
+Gemeinden_wide$Urbanisierung <- as.numeric(Gemeinden_wide$Urbanisierung)
+plot1_Urbanisierung <- plot_uV(Gemeinden_wide, "Urbanisierung", "Urbanisierung", "Score")
+plot1_Anteil_Landw_Fl <- plot_uV(Gemeinden_wide, "Anteil_Landw_Fl", "Anteil landwirtschaftlich genutzter Fläche", "Anteil (%)")
+#str(Gemeinden_wide$Oekon_Anziehung)
+Gemeinden_wide$Oekon_Anziehung <- as.numeric(Gemeinden_wide$Oekon_Anziehung)
+plot1_Oekon_Anziehung <- plot_uV(Gemeinden_wide, "Oekon_Anziehung", "Ökonomische Anziehungskraft", "Score")
+plot1_Anz_Betr_Sek_Sektor <- plot_uV(Gemeinden_wide, "Anz_Betr_Sek_Sektor", "Anzahl der Betriebe im Sekundärsektor", "Anzahl")
+plot1_Reise_OzMz <- plot_uV(Gemeinden_wide, "Reise_OzMz", "Durchschnittliche Reisedauer ins nächste OZ-/MZ (min) (2020)", "Zeit (min)")
+plot1_C_PKW_Dist_km <- plot_uV(Gemeinden_wide, "C_PKW_Dist_km", "PKW-Distanz nach Chemnitz in km", "Distanz (km)")
+plot1_Anz_Beherbergung <- plot_uV(Gemeinden_wide, "Anz_Beherbergung", "Anzahl der Beherbergungsstätten", "Anzahl")
+plot1_BeschQ_insg_2021 <- plot_uV(Gemeinden_wide, "BeschQ_insg_2021", "Beschäftigungsquote", "Anteil (%)")
+
+plot1_Bev_Anteil_Frau
+plot1_Ges_Ver_Saldo
+plot1_Urbanisierung
+plot1_Anteil_Landw_Fl
+plot1_Oekon_Anziehung
+plot1_Anz_Betr_Sek_Sektor
+plot1_Reise_OzMz
+plot1_C_PKW_Dist_km
+plot1_Anz_Beherbergung
+plot1_BeschQ_insg_2021
+
+# räumliche Variation der uV ist deutlich erkennbar
+# Extreme Ausreißer fallen ganz deutlich bei der Anzahl an Beherbergungsstätten und Ökonomische Anziehung auf, aber auch beim Gesamtveränderung-Saldo und beim Urbanisierungs-Score. Auch bei weiteren uV gibt es auffällige Gemeinden.
+```
+
+### Choroplethenkarten: tmap
+
+```{r uV Choroplethenkarten tmap}
+plot_uV_2 <- function(data, variable, title) {
+  tm_shape(data) +
+    tm_polygons(variable, title = title,
+                palette = "cividis", style = "quantile", midpoint = NA) +
+    tm_text("short_name", size = 0.5, root = 5) +
+    tm_layout(legend.text.size = 0.8, legend.title.size = 1.0, 
+              legend.outside = TRUE, legend.outside.position = "bottom")
+}
+
+plot2_Bev_Anteil_Frau <- plot_uV_2(Gemeinden_wide, "Bev_Anteil_Frau", "Bevölkerungsanteil der Frauen (%)")
+plot2_Ges_Ver_Saldo <- plot_uV_2(Gemeinden_wide, "Ges_Ver_Saldo_je_1000ew_2021", "Gesamtveränderung-Saldo je 1000 Einwohner")
+plot2_Urbanisierung <- plot_uV_2(Gemeinden_wide, "Urbanisierung", "Urbanisierung (Score)")
+plot2_Anteil_Landw_Fl <- plot_uV_2(Gemeinden_wide, "Anteil_Landw_Fl", "Anteil landwirtschaftlich genutzter Fläche (%)")
+plot2_Oekon_Anziehung <- plot_uV_2(Gemeinden_wide, "Oekon_Anziehung", "Ökonomische Anziehungskraft (Score)")
+plot2_Anz_Betr_Sek_Sektor <- plot_uV_2(Gemeinden_wide, "Anz_Betr_Sek_Sektor", "Anzahl der Betriebe im Sekundärsektor")
+plot2_Reise_OzMz <- plot_uV_2(Gemeinden_wide, "Reise_OzMz", "Durchschn. Reisedauer (in min) zum nächsten OZ/MZ (2020)")
+plot2_C_PKW_Dist_km <- plot_uV_2(Gemeinden_wide, "C_PKW_Dist_km", "PKW-Distanz nach Chemnitz in km")
+plot2_Anz_Beherbergung <- plot_uV_2(Gemeinden_wide, "Anz_Beherbergung", "Anzahl der Beherbergungsstätten")
+plot2_BeschQ_insg_2021 <- plot_uV_2(Gemeinden_wide, "BeschQ_insg_2021", "Beschäftigungsquote")
+
+plot2_Bev_Anteil_Frau
+plot2_Ges_Ver_Saldo
+plot2_Urbanisierung
+plot2_Anteil_Landw_Fl
+plot2_Oekon_Anziehung
+plot2_Anz_Betr_Sek_Sektor
+plot2_Reise_OzMz
+plot2_C_PKW_Dist_km
+plot2_Anz_Beherbergung
+plot2_BeschQ_insg_2021
+
+# Auch hier ist die räumliche Variation ebenfalls deutlich erkennbar, zusätzlich deuten die Farbmuster auf räumliche Abhängigkeiten hin.
+# Die auf Quantilen basierende Farbskala teilt die Daten in gleiche Größenklassen auf und kann dadurch verschiedene Ebenen des Wertebereichs besser darstellen.
+
+# Anordnen der Plots
+plots2 <- tmap_arrange(plot2_Bev_Anteil_Frau, plot2_Ges_Ver_Saldo, plot2_Anteil_Landw_Fl, plot2_C_PKW_Dist_km, plot2_Anz_Beherbergung, plot2_Reise_OzMz, ncol = 2, nrow = 3)
+plots2
+```
+
+## Moran's I und Geary's c
+
+```{r globale Statistiken}
+### Moran's I
+# Wertebereich: keine Autokorrelation: 0, bis +1: positiv, bis -1: negativ
+moran.test(Gemeinden_wide$Bev_Anteil_U18, NM_weights, zero.policy = TRUE, alternative = "two.sided") # signifikant, leicht positive räumliche Abhängigkeit (Tendenz, dass Anteil 18-Jähriger in benachbarten Gemeinden höher ist)
+moran.test(Gemeinden_wide$Bev_Anteil_18_29, NM_weights, zero.policy = TRUE, alternative = "two.sided") # nicht signifikant, laut Test keine räumliche Musterung
+moran.test(Gemeinden_wide$Bev_Anteil_30_64, NM_weights, zero.policy = TRUE, alternative = "two.sided") # (knapp) nicht signifikant (Niveau 0.1), schwache positive räumliche Abhängigkeit
+moran.test(Gemeinden_wide$Bev_Anteil_UE65, NM_weights, zero.policy = TRUE, alternative = "two.sided") # signifikant, leicht positive räumliche Abhängigkeit
+
+## Moran's I Test basierend auf Monte Carlo
+set.seed(200)
+moran.mc(Gemeinden_wide$Bev_Anteil_U18, NM_weights, zero.policy = TRUE, nsim=999) # signifikante positive räumliche Autokorrelation bestätigt
+moran.mc(Gemeinden_wide$Bev_Anteil_18_29, NM_weights, zero.policy = TRUE, nsim=999) # Nicht-Signifikanz der räumlichen Verteilung dieser Altersgruppe bestätigt
+moran.mc(Gemeinden_wide$Bev_Anteil_30_64, NM_weights, zero.policy = TRUE, nsim=999) # ebenfalls knapp signifikant - schwach positive räumliche Autokorrelation
+moran.mc(Gemeinden_wide$Bev_Anteil_UE65, NM_weights, zero.policy = TRUE, nsim=999) # signifikante positive räumliche Autokorrelation bestätigt
+
+## Geary's c (reagiert in der Regel empfindlicher als Moran's I)
+# Wertebereich: keine Autokorrelation: 1, bis +1: positiv, bis +2: negativ
+geary.test(Gemeinden_wide$Bev_Anteil_U18, NM_weights, zero.policy = TRUE, alternative = "two.sided") # signifikant, positive räumliche Autokorrelation
+geary.test(Gemeinden_wide$Bev_Anteil_18_29, NM_weights, zero.policy = TRUE, alternative = "two.sided") # nicht signifikant von 1 verschieden - keine räumliche Autokorrelation
+geary.test(Gemeinden_wide$Bev_Anteil_30_64, NM_weights, zero.policy = TRUE, alternative = "two.sided") # signifikant, leicht positive räumliche Abhängigkeit
+geary.test(Gemeinden_wide$Bev_Anteil_UE65, NM_weights, zero.policy = TRUE, alternative = "two.sided") # signifikant, leicht positive räumliche Abhängigkeit
+
+## Geary's c Test basierend auf Monte Carlo
+set.seed(200)
+geary.mc(Gemeinden_wide$Bev_Anteil_U18, NM_weights, zero.policy = TRUE, nsim=999)
+geary.mc(Gemeinden_wide$Bev_Anteil_18_29, NM_weights, zero.policy = TRUE, nsim=999)
+geary.mc(Gemeinden_wide$Bev_Anteil_30_64, NM_weights, zero.policy = TRUE, nsim=999)
+geary.mc(Gemeinden_wide$Bev_Anteil_UE65, NM_weights, zero.policy = TRUE, nsim=999)
+# Ergebnisse aus den Tests bestätigen sich
+
+## Local Moran's I / Local Indicators of Spatial Association, LISA
+# li: Local Moran's I Wert für jede Gemeinde (positiv: positive räumliche Autokorrelation, benachbarte Gemeinden haben ähnliche Bevölkerungsanteile, Hoch-Hoch oder Niedrig-Niedrig; negativ: negative räumliche Autokorrelation, benachbarte Gemeinden haben unterschiedliche Bevölkerungsanteile, Hoch-Niedrig, Niedrig-Hoch)
+# E.li: Der erwartete Wert des Local Moran's I unter der Nullhypothese (in der Regel nahe 0)
+# Var.Ii: Die Varianz des Local Moran's I.
+# Z.Ii: Der standardisierte Wert des Local Moran's I (Z-Score).
+# Pr(z != E(Ii)): Der p-Wert des Z-Scores, welcher die Signifikanz der Autokorrelation anzeigt.
+
+head(round(localmoran(Gemeinden_wide$Bev_Anteil_U18, NM_weights, zero.policy = TRUE)[order(localmoran(Gemeinden_wide$Bev_Anteil_U18, NM_weights, zero.policy = TRUE)[, "Pr(z != E(Ii))"]), ], 2), 12)
+head(round(localmoran(Gemeinden_wide$Bev_Anteil_18_29, NM_weights, zero.policy = TRUE)[order(localmoran(Gemeinden_wide$Bev_Anteil_18_29, NM_weights, zero.policy = TRUE)[, "Pr(z != E(Ii))"]), ], 2), 3)
+head(round(localmoran(Gemeinden_wide$Bev_Anteil_30_64, NM_weights, zero.policy = TRUE)[order(localmoran(Gemeinden_wide$Bev_Anteil_30_64, NM_weights, zero.policy = TRUE)[, "Pr(z != E(Ii))"]), ], 2), 8)
+head(round(localmoran(Gemeinden_wide$Bev_Anteil_UE65, NM_weights, zero.policy = TRUE)[order(localmoran(Gemeinden_wide$Bev_Anteil_UE65, NM_weights, zero.policy = TRUE)[, "Pr(z != E(Ii))"]), ], 2), 13)
+```
+# Interpretation
+
+*AG u18:* - signifikant positive räumliche Autokorrelation (Moran's I und Geary's c)
+- Breitenbrunn, Eibenstock, Thermalbad Wiesenbad, und (knapp) auch Mildenau zeigen signifikant positive räumliche Autokorrelation. D.h. diese Gemeinden sind von Gemeinden mit ähnlich hohen Bevölkerungsanteilen dieser Altersgruppe umgeben.
+- Annaberg-Buchholz, Zschopau, Jöhstadt zeigen signifikant negative signifikant negative räumliche Autokorrelation. D.h. diese Gemeinden sind von Gemeinden mit gegenteilig hohen Bevölkerungsanteilen dieser Altersgruppe umgeben.
+
+*AG 18-29:* - keine signifikante räumliche Autokorrelation (Moran's I und Geary's c)
+- lediglich knapp signifikante negative räumliche Autokorrelation vor allem in der Gemeinde Zschorlau, aber auch in Eibenstock und Mildenau
+
+*AG 30-64:* - knapp nicht signifikante (Moran's I) und signifikante (Geary's c) leicht positive räumliche Autokorrelation
+- Eibenstock, Stützengrün, Zschorlau, Oberwiesenthal und Schneeberg zeigen signifikant positive räumliche Autokorrelation
+- Zschopau hat eine signifikant negative räumliche Autokorrelation
+
+*AG ü65:* - signifikant positive räumliche Autokorrelation (Moran's I und Geary's c)
+- Breitenbrunn/Erzgeb., Eibenstock, Mildenau, Thermalbad Wiesenbad, Stützengrün und (knapp nicht mehr) Oberwiesenthal haben eine signifikant positive räumliche Autokorrelation
+- Zschopau hat eine signifikant negative räumliche Autokorrelation
+
+*Zusammenfassung:* 
+- Breitenbrunn und Eibenstock sind besonders hervorzuheben, da sie in den Altersgruppen u18 und ü64 eine signifikant positive räumliche Autokorrelation zeigen.
+- Eibenstock hat auch in der AG 30-64 einen signifikanten positiven Local Moran's I, und für die AG 18-29 einen knapp nicht mehr signifikanten negativen Local Moran's I.
+- Zschopau hat eine negative räumliche Autokorrelation in mehreren Altersgruppen (u18, 30-64, ü65) und scheint tendenziell gegenteilige Beziehungen zu seinen Nachbarn aufzuweisen.
+- Thermalbad Wiesenbad und Mildenau zeigen signifikant positive räumliche Autokorrelationen für die Altersgruppen u18 und ü64. In der AG 18-29 ist der Moran's I für Mildenau hingegen negativ.
+- Stützengrün zeigt signifikant positive räumliche Autokorrelationen für die Altersgruppen 30-64 und ü65. 
+
+
+## Spatial Linear Regression
+
+Nullhypothese: keine räumliche Abhängigkeit im Fehlerterm des linearen Standardregressionsmodells
+
+```{r Residuendiaagnostik}
+# Regressionsmodelle
+lm_AGu18_std <- lm(Bev_Anteil_U18 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std)
+summary(lm_AGu18_std)
+lm_AG18_29_std <- lm(Bev_Anteil_18_29 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std)
+summary(lm_AG18_29_std)
+lm_AG30_64_std <- lm(Bev_Anteil_30_64 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std)
+summary(lm_AG30_64_std)
+lm_AGue65_std <- lm(Bev_Anteil_UE65 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std)
+summary(lm_AGue65_std)
+
+# Globales Moran's I
+lm.morantest(lm_AGu18_std, NM_weights, zero.policy = TRUE, alternative = "two.sided")
+lm.morantest(lm_AG18_29_std, NM_weights, zero.policy = TRUE, alternative = "two.sided")
+lm.morantest(lm_AG30_64_std, NM_weights, zero.policy = TRUE, alternative = "two.sided")
+lm.morantest(lm_AGue65_std, NM_weights, zero.policy = TRUE, alternative = "two.sided")
+# für keine Altersgruppe signifikant
+
+# Moran Scatterplot
+moran.plot(lm_AGu18_std$residuals, NM_weights, zero.policy = TRUE)
+moran.plot(lm_AG18_29_std$residuals, NM_weights, zero.policy = TRUE)
+moran.plot(lm_AG30_64_std$residuals, NM_weights, zero.policy = TRUE)
+moran.plot(lm_AGue65_std$residuals, NM_weights, zero.policy = TRUE)
+
+# Residuenplot AG u18
+ggplot(Gemeinden_wide) +
+  geom_point(aes(x = label_x, y = label_y, col = lm_AGu18_std$residuals, size = lm_AGu18_std$residuals)) +
+  geom_text(aes(x = label_x, y = label_y, label = short_name), size = 3, color = "black", check_overlap = TRUE) +
+  scale_color_gradient2() +
+  labs(title = "Residuen AG u18", color = "Residuen", size = "Residuen") +
+  theme_minimal() +
+  theme(axis.title = element_blank())
+
+# Residuenplot AG 18-29
+ggplot(Gemeinden_wide) +
+  geom_point(aes(x = label_x, y = label_y, col = lm_AG18_29_std$residuals, size = lm_AG18_29_std$residuals)) +
+  geom_text(aes(x = label_x, y = label_y, label = short_name), size = 3, color = "black", check_overlap = TRUE) +
+  scale_color_gradient2() +
+  labs(title = "Residuen AG 18-29", color = "Residuen", size = "Residuen") +
+  theme_minimal() +
+  theme(axis.title = element_blank())
+
+# Residuenplot AG 30-64
+ggplot(Gemeinden_wide) +
+  geom_point(aes(x = label_x, y = label_y, col = lm_AG30_64_std$residuals, size = lm_AG30_64_std$residuals)) +
+  geom_text(aes(x = label_x, y = label_y, label = short_name), size = 3, color = "black", check_overlap = TRUE) +
+  scale_color_gradient2() +
+  labs(title = "Residuen AG 30-64", color = "Residuen", size = "Residuen") +
+  theme_minimal() +
+  theme(axis.title = element_blank())
+
+# Residuenplot AG ü65
+ggplot(Gemeinden_wide) +
+  geom_point(aes(x = label_x, y = label_y, col = lm_AGue65_std$residuals, size = lm_AGue65_std$residuals)) +
+  geom_text(aes(x = label_x, y = label_y, label = short_name), size = 3, color = "black", check_overlap = TRUE) +
+  scale_color_gradient2() +
+  labs(title = "Residuen AG ü65", color = "Residuen", size = "Residuen") +
+  theme_minimal() +
+  theme(axis.title = element_blank())
+
+# Rao's Score Test (Lagrange Multiplier) für Spatial Lag Modelle
+lm.RStests(lm_AGu18_std, NM_weights, test="RSlag", zero.policy = T)
+lm.RStests(lm_AG18_29_std, NM_weights, test="RSlag", zero.policy = T)
+lm.RStests(lm_AG30_64_std, NM_weights, test="RSlag", zero.policy = T)
+lm.RStests(lm_AGue65_std, NM_weights, test="RSlag", zero.policy = T)
+# für keine Altersgruppe signifikant
+
+# Rao's Score Test (Lagrange Multiplier) für Spatial Error Modelle
+lm.RStests(lm_AGu18_std, NM_weights, test="RSerr", zero.policy = T)
+lm.RStests(lm_AG18_29_std, NM_weights, test="RSerr", zero.policy = T)
+lm.RStests(lm_AG30_64_std, NM_weights, test="RSerr", zero.policy = T)
+lm.RStests(lm_AGue65_std, NM_weights, test="RSerr", zero.policy = T)
+# für keine Altersgruppe signifikant
+```
+
+
+Das globale Moran's I wurde für keines der Modelle signifikant. Dennoch soll ein Spatial-Lag-Model durchgeführt werden, um keine räumlichen Abhängigkeiten zu übersehen. Schließlich waren Morans' I, bzw. Geary's c für drei der abhängigen Variablen mit einem leicht positiven Koeffizienten signifikant. Das SLM kann weitere Einblicke in die Gesamtwirkung der Prädiktoren auf die aV bieten.
+Auch eine weiterführende Analyse lokaler räumlicher Effekte mittels LISA kann lokale Cluster und Hotspots in den Daten aufdecken, die im globalen Moran's I nicht signifikant werden.
+
+Außerdem: Vergleich der Modellgüte zwischen OLS und Spatial Lag Model - Auch wenn der globale Moran's I für die Regressionsresiduen nicht signifikant ist, können lokale räumliche Effekte vorhanden sein, die das Modell beeinflussen. Ein SLM kann evtl. helfen, Verzerrungen in den Schätzungen zu reduzieren, die durch räumliche Abhängigkeiten entstehen können, selbst wenn diese nicht global signifikant sind.
+
+Residuenplots:
+Positive Residuen/blaue Punkte: Diese Gemeinden haben einen höheren Bevölkerungsanteil der Altersgruppe als vom Modell vorhergesagt.
+Negative Residuen/rote Punkte: Diese Gemeinden haben einen niedrigeren Bevölkerungsanteil der Altersgruppe als vom Modell vorhergesagt.
+-> Die Größe der Punkte entspricht dem Wert des Residuums (pos/neg)
+
+Zudem: theoretisches Interesse
+
+### Spatial Lag Model (SLM)
+räumliche Störeinflüsse und Spillover-Effekte: Golgher und Voss (2016) How to Interpret the Coefficients of Spatial Models: Spillovers, Direct and Indirect Effects
+```{r SLM}
+library(spatialreg)
+AG_u18_lag = lagsarlm(Bev_Anteil_U18 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std, listw = NM_weights, type = "lag", zero.policy = TRUE)
+
+summary(AG_u18_lag)
+# Residuen: Median nahe 0, einige extreme positive Abweichungen
+# signifikante Koeffizienten: Urbanisierung (-0.364, hoch signifikant), Gesamtveränderung-Saldo (0.246), Anzahl Beherbergung (-0.245), Oekonomische Anziehung (-0.243)
+# räumlicher Korrelationskoeffizient Rho: ist nicht signifikant verschieden von 0 entsprechend LR-Test und Wald-Test -> räumliche Autokorrelation wird durch die uV ausreichend gut erklärt, kein räumliches Regressionsmodell notwendig
+# AIC: 142.77 (OLS-Modell: 141.8) -> keine bessere Modellpassung als OLS
+# LM-Test: keine verbleibende signifikante Residualautokorrelation
+
+impacts(AG_u18_lag, listw = NM_weights)
+# Negative Effekte: Urbanisierung (Direkt: -0.365, Total: -0.182), Anz_Beherbergung (Direkt: -0.246, Total: -0.289), Oekon_Anziehung (Direkt: -0.244, Total: -0.286), C_PKW_Dist_km (Direkt: -0.166, Total: -0.195), Bev_Anteil_Frau (Direkt: -0.155, Total: -0.182), Reise_OzMz (Direkt: -0.131, Total: -0.153)
+# Positive Effekte: Ges_Ver_Saldo_je_1000ew_2021 (Direkt: 0.247, Total: 0.289), Anteil_Landw_FL (Direkt: 0.162, Total: 0.19)
+# Indirekte Effekte sind sehr gering und wirken immer in diesselbe Richtung wie der direkte Effekt (räumliche Autokorrelation ist schwach und wenn dann positiv) - Einfluss der benachbarten Gemeinden spielt nur eine kleine Rolle.
+
+AG_18_29_lag = lagsarlm(Bev_Anteil_18_29 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std, listw = NM_weights, type = "lag", zero.policy = TRUE)
+
+summary(AG_18_29_lag)
+# Residuen: Breite Streuung mit großen positiven und negativen Residuen
+# signifikante Koeffizienten: PKW Distanz Chemnitz (0.43, hoch signifikant), Anteil Landwirtschaftsfläche (0.389), Urbanisierung (0.337), Reise OzMz (-0.3), Beschäftigungsquote (-0.25), Bevölkerungsanteil Frau (-0.22, Niveau 0.1)
+# räumlicher Korrelationskoeffizient Rho: LR-Test ist auf dem Niveau 0.1 signifikant, Wald-Test ist signifikant -> Rho von -0.388 deutet auf negative räumliche Autokorrelation hin, die durch die uV nicht ausreichend erklärt wird
+# AIC: 159.95 (OLS-Modell: 160.79) -> bessere Modellpassung als OLS
+# LM-Test: keine verbleibende signifikante Residualautokorrelation nach Berücksichtigung der räumlichen Abhängigkeit durch das Modell mit dem Rho-Term
+
+impacts(AG_18_29_lag, listw = NM_weights)
+# Positive Effekte: C_PKW_Dist_Chemnitz (Direkt: 0.443, Indirekt: -0.133, Total: 0.31), Anteil_Landw_Fl (Direkt: 0.401, Indirekt: -0.120, Total: 0.280), Urbanisierung (Direkt: 0.347, Indirekt: -0.104, Total: 0.243), Anz_Beherbergung (Direkt: 0.173, Indirekt: -0.052, Total: 0.121)
+# Negative Effekte: Reise OzMz (Direkt: -0.309, Indirekt: 0.093, Total: -0.216), BeschQ_insg_2021 (Direkt: -0.260, Indirekt: 0.078, Total: -0.182), Bev_Anteil_Frau (Direkt: -0.226, Indirekt: 0.068, Total: -0.158)
+# Indirekte Effekte sind bei dieser Altersgruppe gegenteilig zu den direkten Effekten, was auf negative räumliche Autokorrelation hindeutet. Einige der indirekten Effekte sind > +/- 0.1 und schwächen die direkten Effekte etwas ab.
+
+AG_30_64_lag = lagsarlm(Bev_Anteil_30_64 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std, listw = NM_weights, type = "lag", zero.policy = TRUE)
+
+summary(AG_30_64_lag)
+# Residuen: Große Streuung mit symmetrischer Verteilung der Residuen um Null
+# signifikante Koeffizienten: Bevölkerungsanteil Frau (-0.505), PKW-Distanz nach Chemnitz (-0.247, Niveau 0.1), Ökonomische Anziehung (-0.199, Niveau 0.1)
+# räumlicher Korrelationskoeffizient Rho: ist nicht signifikant verschieden von 0 entsprechend LR-Test und Wald-Test -> räumliche Autokorrelation wird durch die uV ausreichend gut erklärt, kein räumliches Regressionsmodell notwendig
+# AIC: 156.92 (OLS-Modell: 155.26) -> keine bessere Modellpassung als OLS
+# LM-Test: keine verbleibende signifikante Residualautokorrelation
+
+impacts(AG_30_64_lag, listw = NM_weights)
+# Negative Effekte: Bev_Anteil_Frau (Direkt: -0.506, Total: -0.565), C_PKW_Dist_Chemnitz (Direkt: -0.248, Total: -0.277), Oekon_Anziehung (Direkt: -0.199, Total: -0.222), Anz_Beherbergung (Direkt: -0.130, Total: -0.145)
+# Positive Effekte: Reise OzMz (Direkt: 0.092, Total: 0.103)
+# Indirekte Effekte sind sehr gering und wirken immer in diesselbe Richtung wie der direkte Effekt (räumliche Autokorrelation ist schwach und wenn dann positiv) - Einfluss der benachbarten Gemeinden spielt nur eine kleine Rolle.
+
+AG_ue65_lag = lagsarlm(Bev_Anteil_UE65 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std, listw = NM_weights, type = "lag", zero.policy = TRUE)
+
+summary(AG_ue65_lag)
+# Residuen: Moderate Streuung mit einigen extremen negativen Residuen und leichter Asymmetrie
+# signifikante Koeffizienten: Bevölkerungsanteil Frau (0.451, hoch signifikant), Gesamtveränderung-Saldo (-0.223), Ökonomische Anziehung (0.225), Anteil Landwirtschaftsfläche (-0.212, Niveau 0.1)
+# räumlicher Korrelationskoeffizient Rho: ist nicht signifikant verschieden von 0 entsprechend LR-Test und Wald-Test -> räumliche Autokorrelation wird durch die uV ausreichend gut erklärt, kein räumliches Regressionsmodell notwendig
+# AIC: 151.25 (OLS-Modell: 149.62) -> keine bessere Modellpassung als OLS
+# LM-Test: keine verbleibende signifikante Residualautokorrelation
+
+impacts(AG_ue65_lag, listw = NM_weights)
+# Positive Effekte: Bev_Anteil_Frau (Direkt: 0.452, Total: 0.5), Oekon_Anziehung (Direkt: 0.225, Total: 0.25), Anz_Beherbergung (Direkt: 0.15, Total: 0.165), C_PKW_Dist_Chemnitz (Direkt: 0.121, Total: 0.135)
+# Negative Effekte: Ges_Ver_Saldo_je_1000ew_2021 (Direkt: -0.223, Total: -0.247), Anteil_Landw_Fl (Direkt: -0.212, Total: -0.235)
+# Indirekte Effekte sind sehr gering und wirken immer in diesselbe Richtung wie der direkte Effekt (räumliche Autokorrelation ist schwach und wenn dann positiv) - der Einfluss der benachbarten Gemeinden spielt nur eine kleine Rolle.
+
+# Breusch-Pagan Test - Nullhypothese: konstante Fehlervarianz / Homoskedastizität
+bptest.Sarlm(AG_u18_lag) # nicht signifikant
+bptest.Sarlm(AG_18_29_lag) # nicht signifikant
+bptest.Sarlm(AG_30_64_lag) # signifikant - keine konstante Fehlervarianz (Heteroskedastizität)
+
+Res1 <- data.frame(stResiduen = scale(residuals(AG_30_64_lag)), st.fitted.values = scale(fitted(AG_30_64_lag)))
+cor.test(Res1$st.fitted.values, Res1$stResiduen) # nicht signifikant
+ggplot(Res1, aes(st.fitted.values, stResiduen))+
+geom_point()+
+geom_smooth(method = "loess")+
+xlab("standardisierte Fitted Values")+
+ylab("standardisierte Residuen")
+# Linearität ist nicht beeinträchtigt
+
+bptest.Sarlm(AG_ue65_lag) # nicht signifikant
+```
+
+### Zusammenfassung Spatial Lag Model
+
+Residuen: gewisse Streuung der Residuen erkennbar, wobei abgesehen von der AG 18-29 der Median sehr nahe bei 0 liegt. Ausreißer in allen AGs.
+
+Komplexe räumliche Struktur der Daten: Signifikante räumliche Autokorrelation für die Altersgruppenvariablen u18, 18-29 und ü65, aber trotzdem keine signifikanten Modelle, was darauf hindeutet, dass die in Betracht gezogenen Prädiktoren die Varianz der abhängigen Variable ausreichend erklären, ohne dass ein Modell notwendig ist, das räumliche Abhängigkeiten speziell miteinbezieht.
+Wiederum scheint das knapp nicht signifikante Rho der AG 18-29 eine räumliche Abhängigkeit zu modellieren, die in Moran's I und Geary's c für die abhängige Variable selbst und auch dem globalen Moran's I für das Modell nicht signifikant wurde. Das könnte einerseits durch räumliche Interaktionen der uV zustande kommen, und ein Spatial-Durbin-Modell interessant machen. Allerdings wurde andererseits im OLS-Modell Heteroskedastizität und mit einem Durbin-Watson-Test zeitliche Autokorrelation nachgewiesen, was auch eine Modellfehlspezifikation, bzw. fehlende Variablen bedeuten (bspw. Bildung, Durchschnittsmieten, Ausländeranteil, etc.) und eine zufällige Signifikanz sein kann.
+
+Vor diesem Hintergrund macht es Sinn, auch ein Spatial Durbin Model (SDM) auszuprobieren, um auch räumliche Autokorrelation der unabhängigen Variablen in das Modell einzubeziehen und weitere Einblicke in die Datenstruktur zu gewinnen. Fehlertermbezogene Modelle wie das Spatial Error Modell (SEM) oder das Spatial Durbin Error Model (SDEM) machen angesichts der Ergebnisse des LM-Tests (keine signifikanten Residualautokorrelationen) keinen Sinn mehr.
+
+### Spatial Durbin Model (SDM)
+
+```{r SDM}
+AG_u18_durbin = lagsarlm(Bev_Anteil_U18 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std, listw = NM_weights, Durbin = TRUE, type = "Durbin", zero.policy = TRUE)
+
+summary(AG_u18_durbin)
+# Residuen: Moderate Streuung mit einigen extremen positiven Residuen, leichte Asymmetrie
+# signifikante Koeffizienten: Urbanisierung (-0.371), Oekonomische Anziehung (-0.285), Anzahl Beherbergung (-0.243), Gesamtveränderung-Saldo (0.195)
+# signifikante Lag-Variablen: Anteil Landwirtschaftsfläche (0.851), PKW Distanz Chemnitz (0.85, Niveau 0.1), Bevölkerungsanteil Frau (0.517, Niveau 0.1)
+# räumlicher Korrelationskoeffizient Rho: ist nicht signifikant verschieden von 0 entsprechend LR-Test und Wald-Test -> räumliche Autokorrelation wird durch die uV ausreichend gut erklärt, ggf. kein räumliches Regressionsmodell notwendig
+# AIC: 139.47 (OLS-Modell: 138.52) -> keine bessere Modellpassung als OLS
+# LM-Test: keine verbleibende signifikante Residualautokorrelation
+
+impacts(AG_u18_durbin, listw = NM_weights)
+# Negative Effekte: Urbanisierung (Direkt: -0.371, Indirekt: -0.01, Total: -0.382), Anz_Beherbergung (Direkt: -0.231, Indirekt: -0.255 Total: -0.486), Oekon_Anziehung (Direkt: -0.275, Indirekt: -0.217, Total: -0.492), Reise_OzMz (Direkt: -0.035, Indirekt: -0.184, Total: -0.219)
+# Effekt-Umkehrung: Bev_Anteil_Frau (Direkt: -0.041, Indirekt: 0.453, Total: 0.412), C_PKW_Dist_km (Direkt: -0.561, Indirekt: 0.833, Total: 0.273), Anzahl Betriebe Sek. Sektor (Direkt: 0.045, Indirekt: -0.297, Total: -0.263)
+# Positive Effekte: Anteil_Landw_FL (Direkt: 0.138, Indirekt: 0.71, Total: 0.849), Ges_Ver_Saldo_je_1000ew_2021 (Direkt: 0.203, Indirekt: -0.175, Total: 0.029)
+# Die Auswirkungen der Variablen variieren stark, es zeigen sich teilweise starke indirekte räumliche Effekte, die den direkten Effekt einer Variablen entweder drastisch verstärken oder ins Gegenteil verkehren (Spillover Effects).
+
+AG_18_29_durbin = lagsarlm(Bev_Anteil_18_29 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std, listw = NM_weights, Durbin = TRUE, type = "Durbin", zero.policy = TRUE)
+
+summary(AG_18_29_durbin)
+# Residuen: Breite Streuung mit großen positiven und negativen Residuen, nur geringfügig negativer Median
+# signifikante Koeffizienten: Urbanisierung (0.299), Reisedauer OzMz (-0.666), Anteil Landwirtschaftsfläche (0.286), Anzahl Beherbergung (0.207, Niveau 0.1), PKW Distanz nach Chemnitz (0.678, Niveau 0.1)
+# signifikante Lag-Variablen: Anzahl Beherbergung (-0.733), Anteil Landwirtschaftsfläche (0.683), Bevölkerungsanteil Frau (0.709), Reisedauer OzMz (0.595)
+# räumlicher Korrelationskoeffizient Rho: signifikant (-0.398) signifikant mit einer negativen räumlichen Autokorrelation  - Effekt, dass hohe Werte einer Gemeinde tendenziell mit niedrigen Werten in Nachbargemeinden assoziiert sind
+# AIC: 152.66 (OLS-Modell: 153.6) -> immerhin geringfügig bessere Modellpassung als OLS
+# LM-Test: verbleibende signifikante Residualautokorrelation ist lediglich auf dem Niveau 0.1 signifikant - das bestätigt das Modell, aber lässt Verbesserungspotenzial offen
+
+impacts(AG_18_29_durbin, listw = NM_weights)
+# Positive Effekte: C_PKW_Dist_Chemnitz (Direkt: 0.672, Indirekt: 0.06, Total: 0.732), Anteil_Landw_Fl (Direkt: 0.242, Indirekt: 0.451, Total: 0.693), Urbanisierung (Direkt: 0.285, Indirekt: 0.141, Total: 0.426)
+# Effekt-Umkehrung: Anz_Beherbergung (Direkt: 0.271, Indirekt: -0.647, Total: -0.376), BeschQ_insg_2021 (Direkt: -0.234, Indirekt: 0.418, Total: 0.184), Bev_Anteil_Frau (Direkt: -0.274, Indirekt: 0.63, Total: 0.356), Gesamtveränderung-Saldo (Direkt: 0.116, Indirekt: -0.398, Total: -0.282)
+# Negative Effekte: Reise OzMz (Direkt: -0.733, Indirekt: 0.682, Total: -0.051)
+# Die Auswirkungen der Variablen variieren stark, es zeigen sich teilweise starke indirekte räumliche Effekte, die den direkten Effekt einer Variablen entweder drastisch verstärken oder ins Gegenteil verkehren (Spillover Effects).
+
+
+AG_30_64_durbin = lagsarlm(Bev_Anteil_30_64 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std, listw = NM_weights, Durbin = TRUE, type = "Durbin", zero.policy = TRUE)
+
+summary(AG_30_64_durbin)
+# Residuen: Moderate Streuung mit symmetrischer Verteilung der Residuen um Null, einige extreme Abweichungen
+# signifikante Koeffizienten: Bevölkerungsanteil Frau (-0.327), Reisedauer OzMz (0.458, Niveau 0.1)
+# signifikante Lag-Variablen: Bevölkerungsanteil Frau (0.784), Anteil Landwirtschaftsfläche (0.626)
+# räumlicher Korrelationskoeffizient Rho: ist nicht signifikant verschieden von 0 entsprechend LR-Test und Wald-Test -> räumliche Autokorrelation wird durch die uV ausreichend gut erklärt, ggf. kein räumliches Regressionsmodell notwendig
+# AIC: 160 (OLS-Modell: 158.38) -> keine bessere Modellpassung als OLS
+# LM-Test: keine verbleibende signifikante Residualautokorrelation
+
+impacts(AG_30_64_durbin, listw = NM_weights)
+# Negative Effekte: Oekon_Anziehung (Direkt: -0.149, Indirekt: -0.23, Total: -0.379), Anz_Beherbergung (Direkt: -0.136, Indirekt: -0.34, Total: -0.476), Ökonomische Anziehung (Direkt: -0.149, Indirekt: -0.223, Total: -0.379), Urbanisierung (Direkt: -0.06, Indirekt: -0.211, Total: -0.272)
+# Positive Effekte: Anteil Landwirtschaftsfläche (Direkt: 0.189, Indirekt: 0.729, Total: 0.918), C_PKW_Dist_Chemnitz (Direkt: 0.099, Indirekt: 0.147, Total: 0.246), Reise OzMz (Direkt: 0.449, Indirekt: -0.376, Total: 0.073), Gesamtveränderung-Saldo (Direkt: 0.07, Indirekt: 0.156, Total: 0.227), Anzahl Betriebe Sekundärer Sektor (Direkt: -0.012, Indirekt: 0.231, Total: 0.219)
+# Effekt-Umkehrung: Bev_Anteil_Frau (Direkt: -0.305, Indirekt: 0.832 Total: 0.527)
+# Die Auswirkungen der Variablen variieren stark, es zeigen sich teilweise starke indirekte räumliche Effekte, die den direkten Effekt einer Variablen entweder drastisch verstärken oder ins Gegenteil verkehren (Spillover Effects).
+
+
+AG_ue65_durbin = lagsarlm(Bev_Anteil_UE65 ~ Bev_Anteil_Frau + Ges_Ver_Saldo_je_1000ew_2021 + Urbanisierung + Anteil_Landw_Fl + Oekon_Anziehung + Anz_Betr_Sek_Sektor + Reise_OzMz + C_PKW_Dist_km + Anz_Beherbergung + BeschQ_insg_2021, data = Gemeinden_wide_std, listw = NM_weights, Durbin = TRUE, type = "Durbin", zero.policy = TRUE)
+
+summary(AG_ue65_durbin)
+# Residuen: Etwas geringere Streuung mit extremen negativen Residuen, leichte Asymmetrie
+# signifikante Koeffizienten: Ökon. Anziehung (0.266), Anteil Landwirtschaftsfläche (-0.286), Bevölkerungsanteil Frau (0.251), Gesamtveränderung-Saldo (-0.176), Anzahl Beherbergung (0.154, Niveau 0.1)
+# signifikante Lag-Variablen: Anteil Landwirtschaftsfläche (-1.128, hoch signifikant), Bevölkerungsanteil Frau (-0.897), Anzahl Beherbergung (0.601)
+# räumlicher Korrelationskoeffizient Rho: ist nicht signifikant verschieden von 0 entsprechend LR-Test und Wald-Test -> räumliche Autokorrelation wird durch die uV ausreichend gut erklärt, ggf. kein räumliches Regressionsmodell notwendig
+# AIC: 128.27 (OLS-Modell: 127.39) -> keine bessere Modellpassung als OLS
+# LM-Test: keine verbleibende signifikante Residualautokorrelation
+
+impacts(AG_ue65_durbin, listw = NM_weights)
+# Positive Effekte: Anz_Beherbergung (Direkt: 0.13, Indirekt: 0.493, Total: 0.663), Oekon_Anziehung (Direkt: 0.254, Indirekt: 0.256, Total: 0.509), Urbanisierung (Direkt: 0.136, Indirekt: 0.053, Total: 0.19)
+# Effekt-Umkehrung: Bev_Anteil_Frau (Direkt: 0.292, Indirekt: -0.824, Total: -0.533)
+# Negative Effekte: Anteil_Landw_Fl (Direkt: -0.241, Indirekt: -0.925 Total: -1.166), C_PKW_Dist_Chemnitz (Direkt: -0.039, Indirekt: -0.457, Total: -0.496), Ges_Ver_Saldo_je_1000ew_2021 (Direkt: -0.184, Indirekt: 0.173, Total: -0.012)
+# Die Auswirkungen der Variablen variieren stark, es zeigen sich teilweise starke indirekte räumliche Effekte, die den direkten Effekt einer Variablen entweder drastisch verstärken oder ins Gegenteil verkehren (Spillover Effects). Im Fall der Variable Anteil Landwirtschaftsfläche verstärkt sich der negative Effekt sogar auf kleiner -1.
+
+
+moran.test(residuals(AG_u18_durbin), NM_weights, zero.policy=TRUE)
+moran.test(residuals(AG_18_29_durbin), NM_weights, zero.policy=TRUE)
+moran.test(residuals(AG_30_64_durbin), NM_weights, zero.policy=TRUE)
+moran.test(residuals(AG_ue65_durbin), NM_weights, zero.policy=TRUE)
+# für keines der Modelle signifikant -> keine räumliche Autokorrelation nachweisbar die das Modell nicht bereits beachtet
+
+# Breusch-Pagan Test - Nullhypothese: konstante Fehlervarianz / Homoskedastizität
+bptest.Sarlm(AG_u18_durbin) # nicht signifikant
+bptest.Sarlm(AG_18_29_durbin) # nicht signifikant
+bptest.Sarlm(AG_30_64_durbin) # nicht signifikant
+bptest.Sarlm(AG_ue65_durbin) # nicht signifikant
+```
+### Zusammenfassung Spatial Durbin Model
+
+Residuen: Im Allgemeinen moderate Streuungen und Mediane nahe 0, aber einige höhere Extremwerte und Ausreißer in den Residuen.
+
+Für alle Altersgruppen außer die AG 18-29 (nur auf dem Niveau 0.1) wird Rho nicht signifikant. D.h. die Erklärungskraft der Prädiktoren reicht in diesen Fällen aus, ohne ein speziell räumliches Modell zu schätzen.
+
+Die Auswirkungen der erklärenden Variablen variieren stark zwischen den Altersgruppen. Besonders auffällig sind die starken indirekten räumlichen Effekte, die den direkten Effekt einer Variablen stark beeinflussen können, teilweise sogar umkehren.
+Beispielsweise zeigt sich bei der Variable "Anteil Landwirtschaftsfläche" in der Altersgruppe über 64 Jahre ein stark negativer Gesamteffekt (-1.166), während sie in anderen Altersgruppen überwiegend positive Effekte zeigt.
+
+Die Bedeutung der Variablen variiert nach wie vor. In der Altersgruppe 18-29 Jahre beispielsweise sind sowohl die Anzahl Beherbergung als auch die Reisedauer OzMz wichtige signifikante Einflussfaktoren, während in anderen Altersgruppen andere Variablen dominieren.
+
+```{r Modellvergleich}
+library(lmtest)
+### Modellvergleich
+logLik(lm_AGu18_std) # höchster Wert: SDM
+logLik(lm_AG18_29_std) # höchster Wert: SDM
+logLik(lm_AG30_64_std) # höchster Wert: SDM
+logLik(lm_AGue65_std) # höchster Wert: SDM
+
+## AIC
+AIC(lm_AGu18_std, AG_u18_lag, AG_u18_durbin) # niedrigster AIC: SDM
+AIC(lm_AG18_29_std, AG_18_29_lag, AG_18_29_durbin) # niedrigster AIC: SDM
+AIC(lm_AG30_64_std, AG_30_64_lag, AG_30_64_durbin) # niedrigster AIC: OLS
+AIC(lm_AGue65_std, AG_ue65_lag, AG_ue65_durbin) # niedrigster AIC: SDM
+
+# Die Modellpassung des Durbin-Modells wäre für alle Altersgruppen außer AG30-64 am besten.
+
+## BIC
+BIC(lm_AGu18_std, AG_u18_lag, AG_u18_durbin) # niedrigster BIC: OLS
+BIC(lm_AG18_29_std, AG_18_29_lag, AG_18_29_durbin) # niedrigster BIC: OLS
+BIC(lm_AG30_64_std, AG_30_64_lag, AG_30_64_durbin) # niedrigster BIC: OLS
+BIC(lm_AGue65_std, AG_ue65_lag, AG_ue65_durbin) # niedrigster BIC: OLS
+
+# Der BIC bevorzugt durchweg die OLS-Schätzung - allerdings ist er konservativer und belohnt tendenziell einfache Modelle
+
+## LRT, da alle Modelle genestet sind
+# LRT-Vergleich: OLS vs. SLM
+lrtest(lm_AGu18_std, AG_u18_lag) # nicht signifikant
+#anova(lm_AGu18_std, AG_u18_lag, test = "LRT")
+lrtest(lm_AG18_29_std, AG_18_29_lag) # nicht signifikant (aber Niveau 0.1)
+#anova(lm_AG18_29_std, AG_18_29_lag, test = "LRT")
+lrtest(lm_AG30_64_std, AG_30_64_lag) # nicht signifikant
+#anova(lm_AG30_64_std, AG_30_64_lag, test = "LRT")
+lrtest(lm_AGue65_std, AG_ue65_lag) # nicht signifikant
+#anova(lm_AGue65_std, AG_ue65_lag, test = "LRT")
+
+# LRT-Vergleich: SLM vs. SDM
+lrtest(AG_u18_lag, AG_u18_durbin) # signifikant
+lrtest(AG_18_29_lag, AG_18_29_durbin) # signifikant
+lrtest(AG_30_64_lag, AG_30_64_durbin) # nicht signifikant (aber Niveau 0.1)
+lrtest(AG_ue65_lag, AG_ue65_durbin) # signifikant
+
+# LRT-Vergleich: OLS vs. SDM
+lrtest(lm_AGu18_std, AG_u18_durbin) # signifikant
+lrtest(lm_AG18_29_std, AG_18_29_durbin) # signifikant
+lrtest(lm_AG30_64_std, AG_30_64_durbin) # nicht signifikant (knapp auch Niveau 0.1 nicht)
+lrtest(lm_AGue65_std, AG_ue65_durbin) # signifikant
+```
+
+
+### Tabelle Modellvergleich
+
+```{r Tabelle Modellvergleich}
+library(spdep)
+
+# Funktion: OLS
+extract_lm_results <- function(model) {
+  summary_model <- summary(model)
+  coefficients <- summary_model$coefficients
+  data.frame(
+    Variable = rownames(coefficients),
+    Effect_lm = coefficients[, "Estimate"],
+    SE_lm = coefficients[, "Std. Error"],
+    pValue_lm = coefficients[, "Pr(>|t|)"]
+  )
+}
+
+# Funktion: Spatial Lag Model
+extract_spatial_lag_results <- function(model) {
+  summary_model <- summary(model)
+  coefficients <- summary_model$Coef
+  data.frame(
+    Variable = rownames(coefficients),
+    Effect_lag = coefficients[, 1],
+    SE_lag = coefficients[, 2],
+    pValue_lag = coefficients[, 4]
+  )
+}
+
+# Funktion: Spatial Durbin Model
+extract_spatial_durbin_results <- function(model) {
+  summary_model <- summary(model)
+  coefficients <- summary_model$Coef
+  data.frame(
+    Variable = rownames(coefficients),
+    Effect_durbin = coefficients[, 1],
+    SE_durbin = coefficients[, 2],
+    pValue_durbin = coefficients[, 4]
+  )
+}
+
+# Extraktion der Ergebnisse für jede Altersgruppe
+results_lm_u18 <- extract_lm_results(lm_AGu18_std)
+results_lag_u18 <- extract_spatial_lag_results(AG_u18_lag)
+results_durbin_u18 <- extract_spatial_durbin_results(AG_u18_durbin)
+
+results_lm_18_29 <- extract_lm_results(lm_AG18_29_std)
+results_lag_18_29 <- extract_spatial_lag_results(AG_18_29_lag)
+results_durbin_18_29 <- extract_spatial_durbin_results(AG_18_29_durbin)
+
+results_lm_30_64 <- extract_lm_results(lm_AG30_64_std)
+results_lag_30_64 <- extract_spatial_lag_results(AG_30_64_lag)
+results_durbin_30_64 <- extract_spatial_durbin_results(AG_30_64_durbin)
+
+results_lm_ue65 <- extract_lm_results(lm_AGue65_std)
+results_lag_ue65 <- extract_spatial_lag_results(AG_ue65_lag)
+results_durbin_ue65 <- extract_spatial_durbin_results(AG_ue65_durbin)
+
+# Funktion zum Kombinieren der Ergebnisse für alle Modelle für eine Altersgruppe
+combine_age_group_results <- function(lm_results, lag_results, durbin_results, age_group) {
+  combined <- lm_results %>%
+    left_join(lag_results, by = "Variable") %>%
+    left_join(durbin_results, by = "Variable") %>%
+    mutate(Altersgruppe = age_group)
+  combined
+}
+
+# Ergebnisse für jede Altersgruppe kombinieren
+results_u18 <- combine_age_group_results(results_lm_u18, results_lag_u18, results_durbin_u18, "AG_u18")
+results_18_29 <- combine_age_group_results(results_lm_18_29, results_lag_18_29, results_durbin_18_29, "AG_18_29")
+results_30_64 <- combine_age_group_results(results_lm_30_64, results_lag_30_64, results_durbin_30_64, "AG_30_64")
+results_ue65 <- combine_age_group_results(results_lm_ue65, results_lag_ue65, results_durbin_ue65, "AG_ue65")
+
+# Alle Ergebnisse zusammenführen
+results_all <- bind_rows(results_u18, results_18_29, results_30_64, results_ue65) %>%
+  select(Altersgruppe, Variable, Effect_lm, SE_lm, pValue_lm, Effect_lag, SE_lag, pValue_lag, Effect_durbin, SE_durbin, pValue_durbin)
+
+# Tabelle anzeigen
+print(results_all)
+
+#write.csv(results_all, "Spat_Regressionen_Vgl_Altersgruppen.csv", row.names = FALSE)
+#write.xlsx(results_all, "Spat_Regressionen_Vgl_Altersgruppen.xlsx", overwrite = T)
+
+# Funktion zum Extrahieren der Impacts des Spatial Lag Modells
+extract_spatial_lag_impacts <- function(model, listw) {
+  impacts_result <- impacts(model, listw = listw)
+  data.frame(
+    direkt_lag = impacts_result$direct,
+    indirekt_lag = impacts_result$indirect,
+    total_lag = impacts_result$total
+  )
+}
+
+# Funktion zum Extrahieren der Impacts des Spatial Durbin Modells
+extract_spatial_durbin_impacts <- function(model, listw) {
+  impacts_result <- impacts(model, listw = listw)
+  data.frame(
+    direkt_durbin = impacts_result$direct,
+    indirekt_durbin = impacts_result$indirect,
+    total_durbin = impacts_result$total
+  )
+}
+
+# Extraktion der Ergebnisse für jede Altersgruppe
+lag_results_u18 <- extract_spatial_lag_impacts(AG_u18_lag, NM_weights)
+lag_results_18_29 <- extract_spatial_lag_impacts(AG_18_29_lag, NM_weights)
+lag_results_30_64 <- extract_spatial_lag_impacts(AG_30_64_lag, NM_weights)
+lag_results_ue65 <- extract_spatial_lag_impacts(AG_ue65_lag, NM_weights)
+
+durbin_results_u18 <- extract_spatial_durbin_impacts(AG_u18_durbin, NM_weights)
+durbin_results_18_29 <- extract_spatial_durbin_impacts(AG_18_29_durbin, NM_weights)
+durbin_results_30_64 <- extract_spatial_durbin_impacts(AG_30_64_durbin, NM_weights)
+durbin_results_ue65 <- extract_spatial_durbin_impacts(AG_ue65_durbin, NM_weights)
+
+# Funktion zum Kombinieren der Ergebnisse für eine Altersgruppe
+combine_age_group_results <- function(lag_results, durbin_results, age_group) {
+  combined <- cbind(lag_results, durbin_results)
+  combined <- combined %>%
+    mutate(Altersgruppe = age_group)
+  combined
+}
+
+# Ergebnisse für jede Altersgruppe kombinieren
+results_u18 <- combine_age_group_results(lag_results_u18, durbin_results_u18, "AG_u18")
+results_18_29 <- combine_age_group_results(lag_results_18_29, durbin_results_18_29, "AG_18_29")
+results_30_64 <- combine_age_group_results(lag_results_30_64, durbin_results_30_64, "AG_30_64")
+results_ue65 <- combine_age_group_results(lag_results_ue65, durbin_results_ue65, "AG_ue65")
+
+# Alle Ergebnisse zusammenführen
+impacts_all <- bind_rows(results_u18, results_18_29, results_30_64, results_ue65) %>%
+  select(Altersgruppe, direkt_lag, indirekt_lag, total_lag, direkt_durbin, indirekt_durbin, total_durbin)
+
+# Tabelle anzeigen
+print(impacts_all)
+
+#write.csv(impacts_all, "Impacts_Regressionen_Vgl_Altersgruppen.csv", row.names = FALSE)
+#write.xlsx(impacts_all, "Impacts_Regressionen_Vgl_Altersgruppen.xlsx", overwrite = T)
+```
+
+
+## Identifikation von räumlichen Mustern im Landkreis
+
+*Local Moran's I:* Misst Ähnlichkeit zwischen Gemeinde yi und allen anderen Beobachtungen, basierend auf der Spatial Weights Matrix. Generelle lokale Autokorrelation, sowohl Cluster als auch Ausreißer. Gut für die Analyse komplexer räumlicher Muster.
+*G-Statistik (G und G)*: Misst den Anteil der Summe der Attribute aller Gemeinden innerhalb der Distanz d einer Gemeinde. Speziell für die Identifikation von Hot Spots und Cold Spots (Kontentration). Nützlich, wenn der Fokus auf der Erkennung hoher oder niedriger Werte in räumlichen Clustern liegt. Ord und Getis 1996
+*Geary's C:* Misst Zusammenhang zwischen Gemeinde yi und den Gemeinden yj in der Nachbarschaft. Betont Unterschiede zwischen benachbarten Werten und ist sensibler für räumliche Heterogenität. Gut zur Erkennung von Variationen zwischen benachbarten Regionen.
+
+
+### Altersgruppen
+
+```{r AG u18}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+# li: Local Moran's I Wert für jede Gemeinde (positiv: positive räumliche Autokorrelation, benachbarte Gemeinden haben ähnliche Bevölkerungsanteile, Hoch-Hoch oder Niedrig-Niedrig; negativ: negative räumliche Autokorrelation, benachbarte Gemeinden haben unterschiedliche Bevölkerungsanteile, Hoch-Niedrig, Niedrig-Hoch)
+# E.li: Der erwartete Wert des Local Moran's I unter der Nullhypothese (in der Regel nahe 0)
+# Var.Ii: Die Varianz des Local Moran's I.
+# Z.Ii: Der standardisierte Wert des Local Moran's I (Z-Score).
+# Pr(z != E(Ii)): Der p-Wert des Z-Scores, welcher die Signifikanz der Autokorrelation anzeigt.
+
+local_moran <- localmoran(Gemeinden_wide$Bev_Anteil_U18, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableAGu18.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+# Statistik: Werte unter 1 -> positive räumliche Autokorrelation, Werte über 1 -> negative räumliche Autokorrelation
+# E.Ci: Erwarteter Wert des lokalen Geary's C.
+# Var.Ci: Varianz des lokalen Geary's C.
+# Z.Ci: Z-Wert für den lokalen Geary's C.
+# Pr(z != E(Ci)): Pseudo-p-Wert basierend auf Z.Ci (ungefaltet).
+# Pr(z != E(Ci)) Sim: Pseudo-p-Wert basierend auf Simulationen (ungefaltet).
+# Pr(folded) Sim: Pseudo-p-Wert basierend auf gefalteten Simulationen.
+# Skewness: Schiefe der Verteilung der permutierten Werte.
+# Kurtosis: Wölbung der Verteilung der permutierten Werte.
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Bev_Anteil_U18, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Bev_Anteil_U18, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableAGu18.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+# G*i: Der berechnete Getis-Ord Gi* Wert (positiv: Regionen haben überzufällig hohe Werte für die betreffende Variable (Hotspots), negativ: Regionen haben überzufällig niedrige Werte für die betreffende Variable (Coldspots))
+# E(G*i): Der erwartete Wert von Gi*.
+# V(G*i): Die Varianz von Gi*.
+# Z(G*i): Der standardisierte Gi*-Wert (Z-Score).
+# Pr(z != E(G*i)): Der p-Wert für den Z-Score, der die Signifikanz des Hotspots oder Coldspots angibt.
+
+# Self-included Nachbarschaftsmatrix für die Berechnung von G*
+NM_si <- include.self(NM)
+summary(NM)
+NM_weights_si <- nb2listw(NM_si, style = "W", zero.policy = TRUE)
+summary(NM_si)
+
+local_g <- localG(Gemeinden_wide$Bev_Anteil_U18, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 14)
+
+write.xlsx(g_table, "g_tableAGu18.xlsx", overwrite = T)
+
+### Plots
+# Farbpaletten
+farbpalette_m <- c("yellow", "white", "green") # positive AK -> grün
+farbpalette_c <- c("green", "white", "yellow") # positive AK -> grün
+farbpalette_g <- c("blue", "white", "red") # hohe Werte: Rot
+
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, AG u18")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, AG u18")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, AG u18")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Farbpalette für Cluster
+cluster_M <- c("High-High" = "red", "Low-Low" = "blue", "High-Low" = "orange", "Low-High" = "purple", "Not Significant" = "grey")
+cluster_C <- c("High-High" = "red", "Low-Low" = "blue", "Other Positive" = "orange", "Negative" = "purple", "Not Significant" = "grey")
+cluster_G <- c("Hotspot" = "red", "Coldspot" = "blue", "Not Significant" = "grey")
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, AG u18")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, AG u18")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, AG u18")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_U18)[order(Gemeinden_wide$Bev_Anteil_U18, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_U18)[order(Gemeinden_wide$Bev_Anteil_U18),], 10)
+
+plot1_u18 # Originalwerte - ggplot2
+plot2_u18 # Originalwerte - tmap Quantile
+```
+
+
+
+```{r AG 19-20}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Bev_Anteil_18_29, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableAG18-29.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Bev_Anteil_18_29, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Bev_Anteil_18_29, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableAG18-29.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Bev_Anteil_18_29, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableAG18-29.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, AG 18-29")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, AG 18-29")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, AG 18-29")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, AG 18-29")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, AG 18-29")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, AG 18-29")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_U18)[order(Gemeinden_wide$Bev_Anteil_18_29, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_18_29)[order(Gemeinden_wide$Bev_Anteil_18_29),], 10)
+
+plot1_18_29 # Originalwerte - ggplot2
+plot2_18_29 # Originalwerte - tmap Quantile
+```
+
+
+
+```{r AG 30-64}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Bev_Anteil_30_64, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableAG30-64.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Bev_Anteil_30_64, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Bev_Anteil_30_64, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableAG30-64.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Bev_Anteil_30_64, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableAG30-64.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, AG 30-64")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, AG 30-64")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, AG 30-64")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.05 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.05 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.05 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.05 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, AG 30-64")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, AG 30-64")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, AG 30-64")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_30_64)[order(Gemeinden_wide$Bev_Anteil_30_64, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_30_64)[order(Gemeinden_wide$Bev_Anteil_30_64),], 10)
+
+plot1_30_64 # Originalwerte - ggplot2
+plot2_30_64 # Originalwerte - tmap Quantile
+```
+
+
+
+```{r AG ue64}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Bev_Anteil_UE65, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableAGue65.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Bev_Anteil_UE65, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Bev_Anteil_UE65, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableAGue65.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Bev_Anteil_UE65, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableAGue65.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, AG ü65")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, AG ü65")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, AG ü65")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, AG ü65")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, AG ü65")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, AG ü65")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_UE65)[order(Gemeinden_wide$Bev_Anteil_UE65, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_UE65)[order(Gemeinden_wide$Bev_Anteil_UE65),], 10)
+
+plot1_ue65 # Originalwerte - ggplot2
+plot2_ue65 # Originalwerte - tmap Quantile
+```
+
+### unabhängige Variablen
+
+#### Bevölkerungsanteil Frau
+
+```{r Frauenanteil}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Bev_Anteil_Frau, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableFrau.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Bev_Anteil_Frau, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Bev_Anteil_Frau, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableFrau.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Bev_Anteil_Frau, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableFrau.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Bevölkerungsanteil Frau (%)")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, Frauenanteil (%)")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, Frauenanteil (%)")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, Frauenanteil (%)")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, Bevölkerungsanteil Frau (%)")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, Bevölkerungsanteil Frau (%)")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_Frau)[order(Gemeinden_wide$Bev_Anteil_Frau, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Anteil_Frau)[order(Gemeinden_wide$Bev_Anteil_Frau),], 10)
+
+plot1_Bev_Anteil_Frau # Originalwerte - ggplot2
+plot2_Bev_Anteil_Frau # Originalwerte - tmap Quantile
+
+moran_table
+local_c_table
+g_table
+```
+
+#### Gesamtveränderung-Saldo je 1000 EW
+
+```{r GesVerSaldo}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Ges_Ver_Saldo_je_1000ew_2021, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableGesVerS.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Ges_Ver_Saldo_je_1000ew_2021, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Ges_Ver_Saldo_je_1000ew_2021, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableGesVerS.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Ges_Ver_Saldo_je_1000ew_2021, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableGesVerS.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Gesamtveränderung-Saldo je 1000 EW")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, GV-Saldo je 1000 EW")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, GV-Saldo je 1000 EW")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, GV-Saldo je 1000 EW")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, Gesamtveränderung-Saldo je 1000 EW")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, Gesamtveränderung-Saldo je 1000 EW")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Ges_Ver_Saldo_je_1000ew_2021)[order(Gemeinden_wide$Ges_Ver_Saldo_je_1000ew_2021, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Ges_Ver_Saldo_je_1000ew_2021)[order(Gemeinden_wide$Ges_Ver_Saldo_je_1000ew_2021),], 10)
+
+plot1_Ges_Ver_Saldo # Originalwerte - ggplot2
+plot2_Ges_Ver_Saldo # Originalwerte - tmap Quantile
+```
+
+#### Urbanisierung
+
+```{r Urbanisierung}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Urbanisierung, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableUrban.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Urbanisierung, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Urbanisierung, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableUrban.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Urbanisierung, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableUrban.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Urbanisierung (Score)")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, Urbanisierung (Score)")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, Urbanisierung (Score)")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, Urbanisierung (Score)")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, Urbanisierung (Score)")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, Urbanisierung (Score)")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Urbanisierung)[order(Gemeinden_wide$Urbanisierung, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Urbanisierung)[order(Gemeinden_wide$Urbanisierung),], 10)
+
+plot1_Urbanisierung # Originalwerte - ggplot2
+plot2_Urbanisierung # Originalwerte - tmap Quantile
+```
+
+#### Anteil Landwirtschaftsfläche (%)
+
+```{r Anteil Landwirtschaftsflaeche}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Anteil_Landw_Fl, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableLandw.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Anteil_Landw_Fl, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Anteil_Landw_Fl, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableLandw.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Anteil_Landw_Fl, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableLandw.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Anteil Landwirtschaftsfläche (%)")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, Anteil Landwirtschaftsfläche (%)")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, Anteil Landwirtschaftsfläche (%)")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, Landwirtschaftsfläche (%)")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, Anteil Landwirtschaftsfläche (%)")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, Anteil Landwirtschaftsfläche (%)")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Anteil_Landw_Fl)[order(Gemeinden_wide$Anteil_Landw_Fl, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Anteil_Landw_Fl)[order(Gemeinden_wide$Anteil_Landw_Fl),], 10)
+
+plot1_Anteil_Landw_Fl # Originalwerte - ggplot2
+plot2_Anteil_Landw_Fl # Originalwerte - tmap Quantile
+```
+
+
+
+#### Ökonomische Anziehung
+
+```{r Oekonom Anziehung}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Oekon_Anziehung, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableOekonAnz.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Oekon_Anziehung, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Oekon_Anziehung, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableOekonAnz.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Oekon_Anziehung, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableOekonAnz.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Ökonomische Anziehung (Score)")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, Ökonomische Anziehung (Score)")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, Ökonomische Anziehung (Score)")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, Ökon. Anziehung (Score)")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, Ökonomische Anziehung (Score)")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, Ökonomische Anziehung (Score)")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Oekon_Anziehung)[order(Gemeinden_wide$Oekon_Anziehung, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Oekon_Anziehung)[order(Gemeinden_wide$Oekon_Anziehung),], 10)
+
+plot1_Oekon_Anziehung # Originalwerte - ggplot2
+plot2_Oekon_Anziehung # Originalwerte - tmap Quantile
+```
+
+#### Anzahl Betriebe sekundärer Wirtschaftssektor
+
+```{r Anzahl Beriebe sek Sek}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Anz_Betr_Sek_Sektor, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableAnzBetr.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Anz_Betr_Sek_Sektor, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Anz_Betr_Sek_Sektor, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableAnzBetr.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Anz_Betr_Sek_Sektor, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableAnzBetr.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Anzahl Betriebe im sek. Sektor")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, Anz. Betriebe sek. Sektor")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, Anz. Betriebe sek. Sektor")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters,  Anz. Betriebe sek. Sektor")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters,  Anzahl Betriebe im sek. Sektor")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters,  Anzahl Betriebe im sek. Sektor")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Anz_Betr_Sek_Sektor)[order(Gemeinden_wide$Anz_Betr_Sek_Sektor, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Anz_Betr_Sek_Sektor)[order(Gemeinden_wide$Anz_Betr_Sek_Sektor),], 10)
+
+plot1_Anz_Betr_Sek_Sektor # Originalwerte - ggplot2
+plot2_Anz_Betr_Sek_Sektor # Originalwerte - tmap Quantile
+```
+
+#### Reisedauer ins nächste Ober- oder Mittelzentrum (min)
+
+```{r Reisedauer OzMz}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Reise_OzMz, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableReiseOzMz.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Reise_OzMz, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Reise_OzMz, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableReiseOzMz.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Reise_OzMz, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableReiseOzMz.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Reisedauer Ober-/Mittelzentrum (min)")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, Reisedauer OZ-/MZ (min)")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, Reisedauer OZ-/MZ (min)")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, Reisedauer OZ-/MZ (min)")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, Reisedauer Ober-/Mittelzentrum (min)")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, Reisedauer Ober-/Mittelzentrum (min)")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Reise_OzMz)[order(Gemeinden_wide$Reise_OzMz, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Reise_OzMz)[order(Gemeinden_wide$Reise_OzMz),], 10)
+
+plot1_Reise_OzMz # Originalwerte - ggplot2
+plot2_Reise_OzMz # Originalwerte - tmap Quantile
+```
+
+
+#### PKW-Distanz nach Chemnitz (km)
+
+```{r PKW-Distanz Chemnitz}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$C_PKW_Dist_km, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableDistC.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$C_PKW_Dist_km, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$C_PKW_Dist_km, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableDistC.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$C_PKW_Dist_km, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+write.xlsx(g_table, "g_tableDistC.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, PKW-Distanz nach Chemnitz (km)")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, PKW-Distanz nach Chemnitz (km)")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, PKW-Distanz nach Chemnitz (km)")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, PKW-Dist Chemnitz (km)")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, PKW-Distanz nach Chemnitz (km)")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, PKW-Distanz nach Chemnitz (km)")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$C_PKW_Dist_km)[order(Gemeinden_wide$C_PKW_Dist_km, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$C_PKW_Dist_km)[order(Gemeinden_wide$C_PKW_Dist_km),], 10)
+
+plot1_C_PKW_Dist_km # Originalwerte - ggplot2
+plot2_C_PKW_Dist_km # Originalwerte - tmap Quantile
+```
+
+#### Anzahl Beherbergungsstätten
+
+```{r Anzahl Beherbergung}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Anz_Beherbergung, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableBeherberg.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Anz_Beherbergung, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Anz_Beherbergung, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableBeherberg.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Anz_Beherbergung, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableBeherberg.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Anzahl Beherbergungsstätten")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, Anzahl Beherbergungsstätten")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, Anzahl Beherbergungsstätten")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, Anzahl Beherbergungsst.")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, Anzahl Beherbergungsstätten")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, Anzahl Beherbergungsstätten")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Anz_Beherbergung)[order(Gemeinden_wide$Anz_Beherbergung, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Anz_Beherbergung)[order(Gemeinden_wide$Anz_Beherbergung),], 10)
+
+plot1_Anz_Beherbergung # Originalwerte - ggplot2
+plot2_Anz_Beherbergung # Originalwerte - tmap Quantile
+```
+
+
+#### Beschäftigungsquote
+
+```{r Beschäftigungsquote}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$BeschQ_insg_2021, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+write.xlsx(moran_table, "moran_tableBeschQ.xlsx", overwrite = T)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$BeschQ_insg_2021, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Anz_Beherbergung, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableBeschQ.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$BeschQ_insg_2021, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableBeschQ.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Beschäftigungsquote")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, Beschäftigungsquote")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, Beschäftigungsquote")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, Beschäftigungsquote")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, Beschäftigungsquote")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, Beschäftigungsquote")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$BeschQ_insg_2021)[order(Gemeinden_wide$BeschQ_insg_2021, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$BeschQ_insg_2021)[order(Gemeinden_wide$BeschQ_insg_2021),], 10)
+
+plot1_BeschQ_insg_2021 # Originalwerte - ggplot2
+plot2_BeschQ_insg_2021 # Originalwerte - tmap Quantile
+```
+
+#### Gesamtbevölkerung
+
+```{r Gesamtbevoelkerung}
+### Local Moran's I / Local Indicators of Spatial Association, LISA
+local_moran <- localmoran(Gemeinden_wide$Bev_Gesamt_2021, NM_weights)
+Gemeinden_wide$local_moran_I <- local_moran[,1]  # Lokaler Moran's I Wert
+Gemeinden_wide$p_value_moran <- local_moran[,5]  # p-Wert
+Gemeinden_wide$cluster_moran <- attributes(local_moran)$quadr$median # Clusterbestimmung über Median, da weniger ausreißer-anfällig als der Mittelwert
+
+local_moran
+
+write.xlsx(moran_table, "moran_tableGesbev.xlsx", overwrite = T)
+
+# Tabelle
+moran_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_moran_I = Gemeinden_wide$local_moran_I,
+  p_value_moran = Gemeinden_wide$p_value_moran,
+  cluster_moran = Gemeinden_wide$cluster_moran
+)
+
+head(moran_table[order(moran_table$p_value_moran),], 12)
+
+### Local Geary's c / Local Indicators of Spatial Association, LISA
+set.seed(100)
+local_c <- localC_perm(Gemeinden_wide$Bev_Gesamt_2021, NM_weights, nsim = 999) # mit pseudo p-Wert
+Gemeinden_wide$local_c <- localC(Gemeinden_wide$Bev_Gesamt_2021, NM_weights)  # Lokaler Geary's C Wert
+Gemeinden_wide$p_value_c <- attributes(local_c)$"pseudo-p"[,4]
+Gemeinden_wide$cluster_geary <- attributes(local_c)$cluster
+
+Gemeinden_wide$cluster_c
+
+local_c_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_c = Gemeinden_wide$local_c,
+  p_value_c = Gemeinden_wide$p_value_c,
+  cluster_geary = Gemeinden_wide$cluster_geary
+)
+
+head(local_c_table[order(local_c_table$p_value_c),], 4)
+
+write.xlsx(local_c_table, "local_c_tableGesbev.xlsx", overwrite = T)
+
+### Local Ord and Getis Gi* / Local Indicators of Spatial Association, LISA
+local_g <- localG(Gemeinden_wide$Bev_Gesamt_2021, NM_weights_si, zero.policy = TRUE)
+Gemeinden_wide$local_g <- attributes(local_g)$internals[,4]
+Gemeinden_wide$p_value_g <-attributes(local_g)$internals[,5]
+Gemeinden_wide$cluster_g <- attributes(local_g)$cluster
+
+local_g
+
+# Tabelle
+g_table <- data.frame(
+  Gemeinde = Gemeinden_wide$Gemeinde,
+  local_g = Gemeinden_wide$local_g,
+  p_value_g = Gemeinden_wide$p_value_g,
+  cluster_g = Gemeinden_wide$cluster_g
+)
+
+head(g_table[order(g_table$p_value_g),], 12)
+
+write.xlsx(g_table, "g_tableGesbev.xlsx", overwrite = T)
+
+### Plots
+# Plot für lokales Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_moran_I", style = "quantile", palette = farbpalette_m, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I, Gesamtbevölkerung")
+
+# Plot für lokales Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_c", style = "quantile", palette = farbpalette_c, 
+              title = "Local Geary's C") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C, Gesamtbevölkerung")
+
+# Plot für Getis-Ord Gi*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("local_g", style = "quantile", palette = farbpalette_g, 
+              title = "Getis-Ord G*") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G*, Gesamtbevölkerung")
+
+### Cluster und Hot-, bzw. Coldspots
+# Moran's I
+Gemeinden_wide$cluster_m <- with(Gemeinden_wide, 
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-High", "High-High",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-Low", "Low-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "High-Low", "High-Low",
+  ifelse(p_value_moran < 0.1 & cluster_moran == "Low-High", "Low-High", "Not Significant")))))
+
+# Geary's C
+Gemeinden_wide$cluster_c <- with(Gemeinden_wide, 
+  ifelse(p_value_c < 0.1 & cluster_geary == "High-High", "High-High",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Low-Low", "Low-Low",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Other Positive", "Other Positive",
+  ifelse(p_value_c < 0.1 & cluster_geary == "Negative", "Negative", "Not Significant")))))
+
+# Getis-Ord G*
+Gemeinden_wide$cluster_g2 <- with(Gemeinden_wide,
+  ifelse(p_value_g < 0.1 & cluster_g == "High", "Hotspot",
+  ifelse(p_value_g < 0.1 & cluster_g == "Low", "Coldspot", "Not Significant")))
+
+# Plot für Local Moran's I
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_m", palette = cluster_M, 
+              title = "Local Moran's I") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Moran's I Clusters, Gesamtbevölkerung")
+
+# Plot für Local Geary's C
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_c", palette = cluster_C, 
+              title = "Local Geary's C Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Local Geary's C Clusters, Gesamtbevölkerung")
+
+# Plot für Getis-Ord G*
+tm_shape(Gemeinden_wide) +
+  tm_polygons("cluster_g2", palette = cluster_G, 
+              title = "Getis-Ord G* Clusters") +
+  tm_text("short_name", size = 0.7, root = 5) +
+  tm_layout(main.title = "Getis-Ord G* Clusters, Gesamtbevölkerung")
+
+# 10 Gemeinden mit höchsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Gesamt_2021)[order(Gemeinden_wide$BeschQ_insg_2021, decreasing = T),],  10)
+
+# 10 Gemeinden mit niedrigsten Werten
+head(cbind(Gemeinden_wide$Gemeinde, Gemeinden_wide$Bev_Gesamt_2021)[order(Gemeinden_wide$Bev_Gesamt_2021),], 10)
+
+plot_uV(Gemeinden_wide, "Bev_Gesamt_2021", "Gesamtbevölkerung", "Anzahl") # Originalwerte - ggplot2
+plot_uV_2(Gemeinden_wide, "Bev_Gesamt_2021", "Gesamtbevölkerung (Anzahl)") # Originalwerte - tmap Quantile
+```
+
+
+
